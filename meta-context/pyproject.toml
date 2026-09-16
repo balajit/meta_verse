@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-context"
+version = "0.1.0"
+description = "Production-grade execution state, correlation ID, and TenantContext manager using contextvars."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Principal Systems Architect", email = "architecture@domain.com" }
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "mypy>=1.8.0",
+    "pylint>=3.0.0",
+    "pipdeptree>=2.13.0",
+    "uv>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meta_context"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q --strict-markers"
+
+[tool.pylint.main]
+py-version = "3.10"
+fail-under = 9.5
+disable = [
+    "missing-module-docstring",
+    "too-few-public-methods"
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  openbao:
+    image: openbao/openbao:2.1.0
+    container_name: ab_openbao
+    ports:
+      - "8200:8200"
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: "root"
+      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    healthcheck:
+      test: ["CMD", "bao", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  opa_sidecar:
+    image: openpolicyagent/opa:0.62.0
+    container_name: ab_opa
+    ports:
+      - "8181:8181"
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "/policies"
+    volumes:
+      - ../governance_rego:/policies:ro
+    healthcheck:
+      test: ["CMD", "opa", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  postgres_db:
+    image: postgres:16-alpine
+    container_name: ab_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: application_builder
+      POSTGRES_USER: builder_admin
+      POSTGRES_PASSWORD: admin_dev_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U builder_admin -d application_builder"]
+      interval: 5s
+      timeout: 3s
+      retries: 3

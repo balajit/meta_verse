@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import logging
+
+import pytest
+from httpx import AsyncClient
+
+logger = logging.getLogger(__name__)
+
+BASE_ENDPOINT = {{ ("/" + model.table_name.strip("/")) | python_literal }}
+
+
+@pytest.mark.asyncio
+async def test_list_{{ model.name | snake_case }}(
+    async_client: AsyncClient,
+) -> None:
+    """Test listing entities via GET endpoint."""
+    try:
+        logger.debug("Sending GET request to %s", BASE_ENDPOINT)
+        response = await async_client.get(BASE_ENDPOINT)
+
+        logger.debug(
+            "Received response from %s: status_code=%s",
+            BASE_ENDPOINT,
+            response.status_code,
+        )
+
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    except Exception:
+        logger.exception("Failed while testing GET %s", BASE_ENDPOINT)
+        raise
+
+
+@pytest.mark.asyncio
+async def test_create_{{ model.name | snake_case }}(
+    async_client: AsyncClient,
+) -> None:
+    """Test creating an entity via POST endpoint."""
+    payload = {
+{% for field in model.fields %}
+{% if not field.is_primary_key %}
+        "{{ field.name }}": {% if field.python_type == 'str' %}"test_{{ field.name }}"{% elif field.python_type == 'int' %}10{% elif field.python_type == 'float' %}99.99{% elif field.python_type == 'bool' %}True{% else %}"test_value"{% endif %},
+{% endif %}
+{% endfor %}
+    }
+
+    try:
+        logger.debug("Sending POST request to %s with payload: %s", BASE_ENDPOINT, payload)
+        response = await async_client.post(BASE_ENDPOINT, json=payload)
+
+        logger.debug(
+            "Received response from %s: status_code=%s",
+            BASE_ENDPOINT,
+            response.status_code,
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert isinstance(data, dict)
+        assert "id_" in data or "id" in data
+
+    except Exception:
+        logger.exception("Failed while testing POST %s", BASE_ENDPOINT)
+        raise
+
+
+@pytest.mark.asyncio
+async def test_get_{{ model.name | snake_case }}_by_id_not_found(
+    async_client: AsyncClient,
+) -> None:
+    """Test fetching a non-existent entity returns 404."""
+    endpoint = f"{BASE_ENDPOINT}/non-existent-id"
+
+    try:
+        logger.debug("Sending GET request to %s", endpoint)
+        response = await async_client.get(endpoint)
+
+        logger.debug(
+            "Received response from %s: status_code=%s",
+            endpoint,
+            response.status_code,
+        )
+
+        assert response.status_code == 404
+
+    except Exception:
+        logger.exception("Failed while testing GET %s", endpoint)
+        raise
+
+
+@pytest.mark.asyncio
+async def test_full_{{ model.name | snake_case }}_lifecycle(
+    async_client: AsyncClient,
+) -> None:
+    """Test the complete entity lifecycle: Create -> Get -> Update -> Delete."""
+    create_payload = {
+{% for field in model.fields %}
+{% if not field.is_primary_key %}
+        "{{ field.name }}": {% if field.python_type == 'str' %}"lifecycle_{{ field.name }}"{% elif field.python_type == 'int' %}5{% elif field.python_type == 'float' %}49.99{% elif field.python_type == 'bool' %}True{% else %}"lifecycle_value"{% endif %},
+{% endif %}
+{% endfor %}
+    }
+
+    try:
+        # 1. Create
+        create_resp = await async_client.post(BASE_ENDPOINT, json=create_payload)
+        assert create_resp.status_code == 201
+        created_data = create_resp.json()
+        entity_id = created_data.get("id_") or created_data.get("id")
+        assert entity_id is not None
+
+        entity_endpoint = f"{BASE_ENDPOINT}/{entity_id}"
+
+        # 2. Get by ID
+        get_resp = await async_client.get(entity_endpoint)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["id_" if "id_" in created_data else "id"] == entity_id
+
+        # 3. Update (PATCH)
+        {% set update_ns = namespace(updated=false) %}
+        update_payload = {
+{% for field in model.fields %}
+{% if not update_ns.updated and not field.is_primary_key and field.python_type == 'str' %}
+            "{{ field.name }}": "updated_{{ field.name }}",
+{% set update_ns.updated = true %}
+{% endif %}
+{% endfor %}
+        }
+        if update_payload:
+            patch_resp = await async_client.patch(entity_endpoint, json=update_payload)
+            assert patch_resp.status_code == 200
+
+        # 4. Delete
+        delete_resp = await async_client.delete(entity_endpoint)
+        assert delete_resp.status_code == 204
+
+        # 5. Verify Deletion
+        get_after_delete = await async_client.get(entity_endpoint)
+        assert get_after_delete.status_code == 404
+
+    except Exception:
+        logger.exception("Failed during CRUD lifecycle test for %s", BASE_ENDPOINT)
+        raise

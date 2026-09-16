@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI
+
+from {{ package_name }}.database import dispose_database
+from {{ package_name }}.extensions.config import settings
+from {{ package_name }}.extensions.policy import (
+    close_policy_guard,
+    init_policy_guard,
+)
+from {{ package_name }}.extensions.telemetry import init_telemetry
+
+{% for model in models %}
+from {{ package_name }}.routers.{{ model.name | snake_case }}_router import (
+    router as {{ model.name | snake_case }}_router,
+)
+{% endfor %}
+
+
+logger = logging.getLogger(
+    "{{ package_name }}"
+)
+
+
+@asynccontextmanager
+async def lifespan(
+    app: FastAPI,
+) -> AsyncIterator[None]:
+    """Manage application-scoped resources."""
+
+    del app
+
+    init_telemetry(settings.service_name)
+
+    policy_client: httpx.AsyncClient | None = None
+    policy_guard_initialized = False
+
+    try:
+        logger.info(
+            "Starting application lifespan",
+            extra={
+                "event_type": "application_startup",
+                "service_name": settings.service_name,
+            },
+        )
+
+        policy_client = httpx.AsyncClient()
+
+        init_policy_guard(
+            client=policy_client,
+            opa_url=settings.opa_url,
+        )
+
+        policy_guard_initialized = True
+
+        logger.info(
+            "PolicyGuard initialized successfully",
+            extra={
+                "event_type": "policy_guard_initialized",
+            },
+        )
+
+        yield
+
+    except Exception:
+        logger.exception(
+            "Application startup or runtime lifecycle failed",
+            extra={
+                "event_type": "application_lifecycle_failed",
+            },
+        )
+        raise
+
+    finally:
+        logger.info(
+            "Shutting down application lifespan",
+            extra={
+                "event_type": "application_shutdown",
+            },
+        )
+
+        if policy_guard_initialized:
+            try:
+                close_policy_guard()
+            except Exception:
+                logger.exception(
+                    "Failed to clear PolicyGuard during application shutdown"
+                )
+
+        if policy_client is not None:
+            try:
+                await policy_client.aclose()
+            except Exception:
+                logger.exception(
+                    "Failed to close PolicyGuard HTTP client during "
+                    "application shutdown"
+                )
+
+        try:
+            await dispose_database()
+        except Exception:
+            logger.exception(
+                "Failed to dispose database during application shutdown"
+            )
+            raise
+
+        logger.info(
+            "Application lifespan shutdown completed",
+            extra={
+                "event_type": "application_shutdown_completed",
+            },
+        )
+
+
+def create_app() -> FastAPI:
+    """Construct the generated FastAPI application."""
+
+    application = FastAPI(
+        title=settings.service_name,
+        version={{ version | python_literal }},
+        lifespan=lifespan,
+    )
+
+{% for model in models %}
+    application.include_router(
+        {{ model.name | snake_case }}_router
+    )
+{% endfor %}
+
+    return application
+
+
+app = create_app()

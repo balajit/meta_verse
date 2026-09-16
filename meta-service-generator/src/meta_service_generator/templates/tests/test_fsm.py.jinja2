@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import pytest
+
+
+{% for model in models %}
+{% if model.fsm %}
+@pytest.mark.asyncio
+async def test_{{ model.name | snake_case }}_fsm_initial_state() -> None:
+    from {{ package_name }}.execution.{{ model.name | snake_case }}_fsm import (
+        {{ model.class_name }}FSM,
+    )
+
+    fsm = {{ model.class_name }}FSM()
+
+    assert str(fsm.current_state_value).upper() == (
+        {{ model.fsm.initial_state | python_literal }}
+    ).upper()
+
+
+{% for transition in model.fsm.transitions %}
+@pytest.mark.asyncio
+async def test_{{ model.name | snake_case }}_fsm_transition_{{ loop.index }}() -> None:
+    from {{ package_name }}.execution.{{ model.name | snake_case }}_fsm import (
+        {{ model.class_name }}FSM,
+    )
+
+    fsm = {{ model.class_name }}FSM()
+
+    transition_name = (
+        "{{ transition.trigger | snake_case }}"
+        "__from__"
+        "{{ transition.source_state | snake_case }}"
+    )
+
+    assert hasattr(
+        {{ model.class_name }}FSM,
+        transition_name,
+    )
+{% endfor %}
+{% endif %}
+{% endfor %}

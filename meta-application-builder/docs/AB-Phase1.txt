@@ -1,0 +1,505 @@
+I acknowledge my role as **Principal System Architect**.
+
+Below is the complete blueprint, concrete implementations, tests, and documentation updates for **Phase 1: Persistence Plane & Relational Storage Layer** located at `meta-application-builder/src/meta_application_builder/persistence`.
+
+---
+
+## Phase 1 Implementation Code & Specifications
+
+### 1. Database Connection & Session Management
+
+#### File: `persistence/db_session/connection.py`
+
+```python
+from __future__ import annotations
+
+from typing import AsyncGenerator
+from contextlib import asynccontextmanager
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy import text
+from meta_application_builder.foundation.security_context.identity import IdentityContextManager
+
+
+class DatabaseSessionError(Exception):
+    """Raised when database session creation or connection fails."""
+    pass
+
+
+class MultiTenantDatabaseManager:
+    """
+    Manages AsyncPG connection pools and executes session-level RLS variable configuration.
+    Sets PostgreSQL session configuration parameter 'app.tenant_id' for Row-Level Security.
+    """
+
+    def __init__(self, database_url: str, echo: bool = False, pool_size: int = 20, max_overflow: int = 10):
+        self._engine: AsyncEngine = create_async_engine(
+            database_url,
+            echo=echo,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_pre_ping=True,
+        )
+        self._session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+            bind=self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+
+    @asynccontextmanager
+    async def tenant_session(self) -> AsyncGenerator[AsyncSession, None]:
+        """
+        Provides an AsyncSession scoped to the active tenant retrieved from IdentityContextManager.
+        Executes SET LOCAL app.tenant_id = '<tenant_id>' within the transaction block.
+        """
+        tenant_id = IdentityContextManager.get_current_tenant_id()
+        async with self._session_factory() as session:
+            async with session.begin():
+                # Enforce dynamic session setting for PostgreSQL RLS policies
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": tenant_id},
+                )
+                try:
+                    yield session
+                except Exception:
+                    await session.rollback()
+                    raise
+
+    async def close(self) -> None:
+        """Gracefully close engine pool connection."""
+        await self._engine.dispose()
+
+```
+
+---
+
+### 2. ORM Models & Base Definitions
+
+#### File: `persistence/models/base.py`
+
+```python
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.ext.asyncio import AsyncAttrs
+from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP
+
+
+class Base(AsyncAttrs, DeclarativeBase):
+    """Declarative Base class featuring async attribute loading support."""
+    pass
+
+
+class TenantAwareMixin:
+    """Mixin defining identity, tenant namespace, and creation metadata columns."""
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        mapped_column_type=None, type_=UUID, nullable=False, index=True
+    )  # Overridden in concrete models with VARCHAR for matching RLS patterns
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+```
+
+---
+
+#### File: `persistence/models/registry.py`
+
+```python
+from __future__ import annotations
+
+import uuid
+from typing import Dict, Any, Optional
+from sqlalchemy import String, Integer, ForeignKey, Index, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from meta_application_builder.persistence.models.base import Base, TenantAwareMixin
+
+
+class SpecificationRegistryModel(Base, TenantAwareMixin):
+    """ORM representation of canonical blueprint specifications."""
+
+    __tablename__ = "specifications_registry"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    urn: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    immutability_tier: Mapped[str] = mapped_column(String(16), nullable=False, default="OVERRIDABLE")
+    schema_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "urn", "version", name="uq_tenant_urn_version"),
+        Index("idx_spec_registry_tenant_urn", "tenant_id", "urn"),
+    )
+
+
+class DAGLineageClosureModel(Base):
+    """Precomputed closure table storing dependency graph relations for fast lookup."""
+
+    __tablename__ = "dag_lineage_closure"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ancestor_urn: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    descendant_urn: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "ancestor_urn", "descendant_urn", name="uq_dag_closure_edge"),
+        Index("idx_dag_closure_traversal", "tenant_id", "ancestor_urn", "depth"),
+    )
+
+```
+
+---
+
+#### File: `persistence/models/audit.py`
+
+```python
+from __future__ import annotations
+
+import uuid
+from typing import Dict, Any
+from sqlalchemy import String, Integer, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from meta_application_builder.persistence.models.base import Base, TenantAwareMixin
+
+
+class BuildJobAuditModel(Base, TenantAwareMixin):
+    """Master record for code compilation and build pipeline execution."""
+
+    __tablename__ = "build_job_audit"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="SUBMITTED")
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    version_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    specification_urn: Mapped[str] = mapped_column(String(255), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    events: Mapped[list[BuildJobEventModel]] = relationship("BuildJobEventModel", back_populates="job", cascade="all, delete-orphan")
+
+
+class BuildJobEventModel(Base):
+    """Cryptographically chained event logs generated during build steps."""
+
+    __tablename__ = "build_job_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[str] = mapped_column(String(64), ForeignKey("build_job_audit.job_id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    previous_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    job: Mapped[BuildJobAuditModel] = relationship("BuildJobAuditModel", back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence_number", name="uq_job_event_sequence"),
+        Index("idx_event_chain", "job_id", "sequence_number"),
+    )
+
+
+class BuildIdempotencyKeyModel(Base, TenantAwareMixin):
+    """Idempotency record to prevent duplicate submit execution under race conditions."""
+
+    __tablename__ = "build_idempotency_keys"
+
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_tenant_idempotency_key"),
+    )
+
+```
+
+---
+
+### 3. Tamper-Evident Cryptographic Event Hash Chaining
+
+#### File: `persistence/event_chain/crypt_chain.py`
+
+```python
+from __future__ import annotations
+
+import json
+import hashlib
+from typing import Dict, Any
+
+
+class CryptographicChainError(Exception):
+    """Raised when log chain integrity validation fails."""
+    pass
+
+
+class EventCryptographicChain:
+    """
+    Computes and verifies SHA-256 cryptographic hashes for append-only audit logs.
+    Formula: H_n = SHA256(H_{n-1} || JSON_CANONICAL(payload) || sequence_number)
+    """
+
+    GENESIS_HASH: str = "0000000000000000000000000000000000000000000000000000000000000000"
+
+    @classmethod
+    def serialize_canonical(cls, payload: Dict[str, Any]) -> str:
+        """Deterministic UTF-8 JSON serialization with sorted keys."""
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def calculate_hash(cls, previous_hash: str, sequence_number: int, payload: Dict[str, Any]) -> str:
+        """Calculates hash H_n for a new event given its predecessor state."""
+        canonical_json = cls.serialize_canonical(payload)
+        digest_input = f"{previous_hash}:{sequence_number}:{canonical_json}".encode("utf-8")
+        return hashlib.sha256(digest_input).hexdigest()
+
+    @classmethod
+    def verify_chain(cls, events: list[Dict[str, Any]]) -> bool:
+        """
+        Validates an entire event sequence for tamper detection.
+        Expects dicts containing 'sequence_number', 'previous_hash', 'payload', and 'hash'.
+        """
+        if not events:
+            return True
+
+        expected_prev = cls.GENESIS_HASH
+        for idx, event in enumerate(events):
+            seq = event["sequence_number"]
+            prev_hash = event["previous_hash"]
+            curr_hash = event["hash"]
+            payload = event["payload"]
+
+            if seq != idx + 1:
+                raise CryptographicChainError(f"Sequence mismatch at position {idx}: expected {idx + 1}, got {seq}")
+
+            if prev_hash != expected_prev:
+                raise CryptographicChainError(
+                    f"Chain broken at sequence {seq}: previous_hash '{prev_hash}' does not match expected '{expected_prev}'"
+                )
+
+            calculated = cls.calculate_hash(prev_hash, seq, payload)
+            if calculated != curr_hash:
+                raise CryptographicChainError(
+                    f"Tamper detected at sequence {seq}: stored hash '{curr_hash}' does not match calculated '{calculated}'"
+                )
+
+            expected_prev = curr_hash
+
+        return True
+
+```
+
+---
+
+### 4. Database Migrations Configuration
+
+#### File: `persistence/migrations/env.py`
+
+```python
+import asyncio
+from logging.config import fileConfig
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from alembic import context
+
+from meta_application_builder.persistence.models.base import Base
+# Ensure all ORM models are imported so Alembic discovers metadata
+from meta_application_builder.persistence.models.registry import SpecificationRegistryModel, DAGLineageClosureModel
+from meta_application_builder.persistence.models.audit import BuildJobAuditModel, BuildJobEventModel, BuildIdempotencyKeyModel
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        # Inject RLS Row Level Security initialization on table migration
+        connection.execute(
+            """
+            ALTER TABLE specifications_registry ENABLE ROW LEVEL SECURITY;
+            CREATE POLICY tenant_isolation_policy ON specifications_registry
+                USING (tenant_id = current_setting('app.tenant_id', true));
+            """
+        )
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """In-process async engine initialization for migrations."""
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode."""
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+```
+
+---
+
+### 5. Failure Modes, Edge Cases, & Performance Trade-Offs
+
+1. **Unset Tenant Setting in Connection Pool Reuse**:
+* *Risk*: Connection pooling might reuse an AsyncPG connection where `app.tenant_id` was set by a prior task, leading to cross-tenant data access if uninitialized.
+* *Mitigation*: `MultiTenantDatabaseManager.tenant_session()` explicitly executes `set_config('app.tenant_id', :tenant_id, true)` with `is_local=true` scope on every checkout block within `session.begin()`.
+
+
+2. **Graph Traversal Performance Overhead (DAG Resolution)**:
+* *Trade-off*: Resolving recursive dependency graphs using dynamic SQL `WITH RECURSIVE` queries can slow response times to $O(V+E)$ on large schemas.
+* *Decision*: Use the precomputed `dag_lineage_closure` model to store graph transitive closures. Reads evaluate directly in $O(1)$ indexed lookup time against `ancestor_urn`.
+
+
+3. **Event Log Tampering / Out-of-Order Appends**:
+* *Risk*: Race conditions during parallel event writing might corrupt `previous_hash` chains or cause sequence gaps.
+* *Mitigation*: Enforce database-level `UniqueConstraint("job_id", "sequence_number")` combined with optimistic sequence validation in `EventCryptographicChain`.
+
+
+
+---
+
+### 6. Phase 1 Test Suite
+
+#### File: `tests/persistence/test_crypt_chain.py`
+
+```python
+import pytest
+from meta_application_builder.persistence.event_chain.crypt_chain import (
+    EventCryptographicChain,
+    CryptographicChainError,
+)
+
+def test_chain_hash_generation_and_verification():
+    payload_1 = {"action": "JOB_SUBMITTED", "user": "usr_alpha"}
+    hash_1 = EventCryptographicChain.calculate_hash(
+        EventCryptographicChain.GENESIS_HASH, 1, payload_1
+    )
+
+    payload_2 = {"action": "COMPILATION_STARTED", "compiler_version": "2.1.0"}
+    hash_2 = EventCryptographicChain.calculate_hash(hash_1, 2, payload_2)
+
+    events = [
+        {
+            "sequence_number": 1,
+            "previous_hash": EventCryptographicChain.GENESIS_HASH,
+            "payload": payload_1,
+            "hash": hash_1,
+        },
+        {
+            "sequence_number": 2,
+            "previous_hash": hash_1,
+            "payload": payload_2,
+            "hash": hash_2,
+        },
+    ]
+
+    assert EventCryptographicChain.verify_chain(events) is True
+
+
+def test_chain_tamper_detection_raises_error():
+    payload_1 = {"action": "JOB_SUBMITTED", "user": "usr_alpha"}
+    hash_1 = EventCryptographicChain.calculate_hash(
+        EventCryptographicChain.GENESIS_HASH, 1, payload_1
+    )
+
+    # Payload modified after hash generation (Tampering)
+    tampered_payload_1 = {"action": "JOB_SUBMITTED", "user": "usr_hacker"}
+
+    events = [
+        {
+            "sequence_number": 1,
+            "previous_hash": EventCryptographicChain.GENESIS_HASH,
+            "payload": tampered_payload_1,
+            "hash": hash_1,
+        }
+    ]
+
+    with pytest.raises(CryptographicChainError) as exc_info:
+        EventCryptographicChain.verify_chain(events)
+    assert "Tamper detected" in str(exc_info.value)
+
+```
+
+---
+
+### 7. Documentation Update
+
+#### File: `persistence/README.md`
+
+```markdown
+# Persistence Plane & Relational Storage Layer
+
+## Overview
+This phase provides the relational database foundation, AsyncPG engine pooling, PostgreSQL Row-Level Security (RLS) policies, precomputed transitive closure DAG tables, and tamper-evident cryptographic event hash-chaining.
+
+## File Registry & Technical Responsibilities
+
+| File Path | Functional Scope & Implementation Details |
+| --- | --- |
+| `db_session/connection.py` | `MultiTenantDatabaseManager` providing session allocation and setting dynamic dynamic `app.tenant_id` session configurations. |
+| `models/base.py` | SQLAlchemy 2.0 Async Declarative `Base` and `TenantAwareMixin` defining UUID and tenant tracking schemas. |
+| `models/registry.py` | `SpecificationRegistryModel` and `DAGLineageClosureModel` for precomputed graph dependency storage. |
+| `models/audit.py` | `BuildJobAuditModel`, `BuildJobEventModel`, and `BuildIdempotencyKeyModel` for audit logging and submit deduplication. |
+| `event_chain/crypt_chain.py` | `EventCryptographicChain` implementing SHA-256 hash chaining ($H_n = \text{SHA256}(H_{n-1} \parallel \text{payload})$) for tamper detection. |
+| `migrations/env.py` | Alembic async migration configuration enabling Expand-Migrate-Contract cycles and PostgreSQL RLS creation scripts. |
+
+```
+
+---

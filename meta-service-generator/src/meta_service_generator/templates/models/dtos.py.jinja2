@@ -1,0 +1,81 @@
+# Synthesized Pydantic V2 DTO Models
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class {{ dto.model_name }}CreateDTO(BaseModel):
+    {% if dto.create_fields %}
+    {% for field in dto.create_fields %}
+    {{ field.name }}: {{ field.python_type }}{% if field.is_optional %} | None{% endif %} = Field(
+        {% if field.default_value != "..." %}{{ field.default_value }}{% else %}...{% endif %},
+        alias={{ field.original_name | python_literal }},
+    )
+    {% endfor %}
+    {% else %}
+    pass
+    {% endif %}
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        frozen=True,
+        extra="forbid",
+    )
+
+
+class {{ dto.model_name }}UpdateDTO(BaseModel):
+    {% if dto.update_fields %}
+    {% for field in dto.update_fields %}
+    {{ field.name }}: {{ field.python_type }} | None = Field(
+        None,
+        alias={{ field.original_name | python_literal }},
+    )
+    {% endfor %}
+    {% else %}
+    pass
+    {% endif %}
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        frozen=True,
+        extra="forbid",
+    )
+
+
+class {{ dto.model_name }}SearchDTO(BaseModel):
+    """REQ-004: Search DTO independent from Create DTO with ALL fields optional (None) [source: 3]."""
+    {% if dto.search_fields %}
+    {% for field in dto.search_fields %}
+    {{ field.name }}: {{ field.python_type }} | None = Field(
+        None,
+        alias={{ field.original_name | python_literal }},
+    )
+    {% endfor %}
+    {% else %}
+    pass
+    {% endif %}
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        frozen=True,
+        extra="forbid",
+    )
+
+
+class {{ dto.model_name }}ResponseDTO(BaseModel):
+    {% if dto.response_fields %}
+    {% for field in dto.response_fields %}
+    {{ field.name }}: {{ field.python_type }}{% if field.is_optional %} | None{% endif %} = Field(
+        {% if field.default_value != "..." %}{{ field.default_value }}{% else %}...{% endif %},
+        alias={{ field.original_name | python_literal }},
+    )
+    {% endfor %}
+    {% else %}
+    pass
+    {% endif %}
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        frozen=True,
+        extra="forbid",
+    )

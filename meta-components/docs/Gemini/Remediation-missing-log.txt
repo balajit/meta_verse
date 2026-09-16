@@ -1,0 +1,33 @@
+The **Remediation Tracking Register Ledger** with the added **Section Number** column mapping each item directly to its corresponding section in the architectural specification:
+
+### Remediation Tracking Register Ledger (Items 23–50)
+
+| Co-Architect Item | Review Gap & Impact | Remediation Strategy & Architectural Target | Target Section Number |
+| --- | --- | --- | --- |
+| **Item #23** | JWT validation missing key rotation semantics. | Require `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, and `tenant_id` claims; implement JWKS discovery with cached TTLs and signature verification. | **Section 5.2.1** |
+| **Item #24** | Ambiguous OpenBao startup acquisition vs dynamic renewal. | Formalize short-lived AppRole access token leasing, active renewal loops, dynamic rotation, and non-blocking worker shutdown on renewal failure. | **Section 5.2.3** |
+| **Item #25**<br> | Hash chaining alone does not equal WORM audit integrity.
+
+ | Anchor DB event chain heads ($H_N$) to signed periodic checkpoints written to an immutable external WORM audit store. | **Section 4.1.1 & Section 5.2.3** |
+| **Item #26** | PostgreSQL pool exhaustion fallback to Redis risks stale authorization. | Define strict cache trust tiers (`ACTIVE_SIGNED`, `STALE_INDICATED`, `UNTRUSTED`); enforce fail-closed checks on auth/mutations when DB/BCR are unreachable. | **Section 3.3.2 & Section 5.3** |
+| **Item #27** | Incorrect OPA failure code (`500` vs policy denial). | Standardize RFC-7807 responses: emit `403 Forbidden` for policy rejection and `503 Service Unavailable` with `Retry-After` for OPA engine timeouts. | **Section 3.2.3 & Section 5.3** |
+| **Item #28** | Stale static 512 MB worker RAM limit conflicts with admission model. | Replace static process caps with pre-ingestion tenant quota checks (`max_ast_nodes`, `max_payload_bytes`) and cgroup OS container boundaries. | **Section 5.1.2 & Section 5.3** |
+| **Item #29** | Field-level immutability lacks operation-level precision. | Define granular permissions (`READ`, `ADD`, `REPLACE`, `DELETE`, `DISABLE`) across `FINAL`, `EXTENDABLE`, and `OVERRIDABLE` tiers. | **Section 3.2.1** |
+| **Item #30** | Monolithic single-pass spec validation pipeline. | Decouple validation into Phase A (Pure Static), Phase B (Resolution/Topology), and Phase C (Policy/Governance) to support offline CLI direct execution. | **Section 3.2.2** |
+| **Item #33** | `artifact_manifests` missing key provenance and lifecycle states. | Expand artifact schemas to include `build_input_sha256`, `policy_bundle_sha256`, digital signatures, and state tracking (`STAGED`, `PUBLISHED`, `REVOKED`). | **Section 4.2.1** |
+| **Item #34** | URN primary keys lack explicit collision semantics. | Implement transactional registration: matching CAS digest returns idempotent `200 OK`, while conflicting CAS digest yields `409 Conflict`. | **Section 3.3.2 & Section 4.2.1** |
+| **Item #35** | Split-brain risk across BCR, PostgreSQL closure, and NetworkX graphs. | Designate BCR as authoritative dependency system of record; PostgreSQL provides closure acceleration; NetworkX operates strictly in-memory. | **Section 3.3.3 & Section 4.1.2** |
+| **Item #36** | Unbounded graph expansions during transitive resolution. | Enforce static limits (`max_depth: 32`, `max_nodes: 10000`, `max_payload_bytes: 10MB`); return `413 Payload Too Large` on breach. | **Section 3.1.3 & Section 3.3.3** |
+| **Item #37** | Artifact signing identity and lifecycle undefined. | Enforce HSM/KMS digital signatures over `ProvenanceManifest` payloads during stage transitions; verify at BCR registration and deployment. | **Section 2.2 & Section 4.2.1** |
+| **Item #38** | Abrupt process killing on build cancellation. | Introduce cooperative `CANCEL_REQUESTED` tokens to allow workers to checkpoint safely and flush staging resources before process termination. | **Section 3.5.4** |
+| **Item #39** | Conflated distributed timeout parameters. | Formalize distinct timeout metrics across API requests, worker leases, queue visibility, maximum build duration, OPA evaluations, and CAS IO. | **Section 3.5.2 & Section 5.3** |
+| **Item #40** | Unclassified operational retry logic. | Build explicit error matrix separating retryable infrastructure faults (DB pool timeout, OPA 503) from terminal logical errors (invalid syntax, DAG cycles). | **Section 3.5.4 & Section 5.3** |
+| **Item #41** | Missing distributed tracing NFR requirements. | Mandate OpenTelemetry context propagation (`trace_id`, `span_id`, `tenant_id`, `job_id`) across all API, worker, OPA, and compiler planes. | **Section 5.1.3** |
+| **Item #42** | Operational SLOs omit non-latency reliability metrics. | Establish quantitative SLO targets for API acceptance availability, build completion success rates, queue age metrics, and zero CAS checksum failures. | **Section 5.1.3** |
+| **Item #43** | Non-standardized error strings in RFC-7807 responses. | Define stable, machine-readable error codes (`MBR-001` through `MBR-010`) to decouple programmatic client handling from human prose. | **Section 3.2.3** |
+| **Item #44** | Over-reliance on URI major versioning for artifact contracts. | Decouple REST URI paths (`/v1/`) from underlying specification manifest schemas, target runtime contracts, and compiler engine versions. | **Section 3.1.3** |
+| **Item #45** | Undefined PostgreSQL zero-downtime migration protocol. | Require `Expand` $\rightarrow$ `Migrate` $\rightarrow$ `Contract` database deployment patterns, maintaining backward schema compatibility for active workers. | **Section 4.1.1** |
+| **Item #46** | Unchecked version compatibility between compiler and runtimes. | Embed compiler version metadata and manifest compatibility ranges inside registered BCR artifacts to prevent runtime contract mismatches. | **Section 3.4.2 & Section 4.2.1** |
+| **Item #47** | Partial publication hazards across multi-artifact builds. | Treat the `Build Artifact Manifest` as the single atomic unit of publication, guaranteeing all underlying CAS blobs publish together. | **Section 3.4.3 & Section 4.2.1** |
+| **Item #48** | Overlapping, ununified build execution state models. | Adopt the canonical 14-state pipeline (`SUBMITTED` $\rightarrow$ `QUEUED` $\rightarrow$ ... $\rightarrow$ `COMPLETED`) with orthogonal sub-state flags (`CANCEL_REQUESTED`, `RETRY_WAIT`). | **Section 3.5.2** |
+| **Item #50** | Unordered remediation implementation roadmap. | Enforce execution sequence: P0 (Architectural Correctness & Data Integrity) $\rightarrow$ P1 (Build Reproducibility) $\rightarrow$ P2 (Security/Operational Hardening) $\rightarrow$ P3 (API Maturity). | **Section 1.3** |

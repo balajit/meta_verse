@@ -1,0 +1,163 @@
+# Synthesized HTTP Router delegating to Domain Services (REQ-004)
+from __future__ import annotations
+
+import logging
+from typing import Final
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from {{ package_name }}.models.{{ model.name | snake_case }}_dtos import (
+    {{ model.class_name }}CreateDTO,
+    {{ model.class_name }}ResponseDTO,
+    {{ model.class_name }}SearchDTO,
+    {{ model.class_name }}UpdateDTO,
+)
+from {{ package_name }}.service.{{ model.name | snake_case }}_service import (
+    {{ model.class_name }}DomainService,
+    get_{{ model.name | snake_case }}_service,
+)
+
+
+logger: Final[logging.Logger] = logging.getLogger(__name__)
+
+
+router = APIRouter(
+    prefix={{ ("/" + model.table_name.lstrip("/")) | python_literal }},
+    tags=[{{ model.class_name | python_literal }}],
+)
+
+
+async def list_entities(
+    search_params: {{ model.class_name }}SearchDTO = Depends(
+        {{ model.class_name }}SearchDTO
+    ),
+    service: {{ model.class_name }}DomainService = Depends(
+        get_{{ model.name | snake_case }}_service
+    ),
+) -> list[{{ model.class_name }}ResponseDTO]:
+    """Search endpoint consuming independent Search DTO with optional parameters."""
+    logger.info(
+        "Searching {{ model.class_name }} entities with parameters: %s",
+        search_params,
+    )
+    try:
+        return await service.search(search_params)
+    except Exception as exc:
+        logger.exception("Failed to search {{ model.class_name }} entities: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to perform search operation for {{ model.class_name }}",
+        ) from exc
+
+
+async def get_entity_by_id(
+    entity_id: str,
+    service: {{ model.class_name }}DomainService = Depends(
+        get_{{ model.name | snake_case }}_service
+    ),
+) -> {{ model.class_name }}ResponseDTO:
+    """Fetch a single {{ model.class_name }} entity by its primary identifier."""
+    logger.info("Fetching {{ model.class_name }} entity with ID: %s", entity_id)
+    try:
+        entity = await service.get_by_id(entity_id)
+        if entity is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{{ model.class_name }} entity with ID '{entity_id}' not found",
+            )
+        return entity
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to retrieve {{ model.class_name }} entity with ID: %s", entity_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve {{ model.class_name }} entity with ID '{entity_id}'",
+        ) from exc
+
+
+async def create_entity(
+    payload: {{ model.class_name }}CreateDTO,
+    service: {{ model.class_name }}DomainService = Depends(
+        get_{{ model.name | snake_case }}_service
+    ),
+) -> {{ model.class_name }}ResponseDTO:
+    """Create a {{ model.class_name }} through the domain service."""
+    logger.info("Creating {{ model.class_name }} entity")
+    try:
+        created = await service.create(payload)
+        return created
+    except Exception as exc:
+        logger.exception("Failed to create {{ model.class_name }} entity: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to create {{ model.class_name }} entity",
+        ) from exc
+
+
+async def update_entity(
+    entity_id: str,
+    payload: {{ model.class_name }}UpdateDTO,
+    service: {{ model.class_name }}DomainService = Depends(
+        get_{{ model.name | snake_case }}_service
+    ),
+) -> {{ model.class_name }}ResponseDTO:
+    """Update an existing {{ model.class_name }} entity through the domain service."""
+    logger.info("Updating {{ model.class_name }} entity with ID: %s", entity_id)
+    try:
+        updated_entity = await service.update(entity_id, payload)
+        if updated_entity is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{{ model.class_name }} entity with ID '{entity_id}' not found for update",
+            )
+        return updated_entity
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update {{ model.class_name }} entity with ID: %s", entity_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update {{ model.class_name }} entity with ID '{entity_id}'",
+        ) from exc
+
+
+async def delete_entity(
+    entity_id: str,
+    service: {{ model.class_name }}DomainService = Depends(
+        get_{{ model.name | snake_case }}_service
+    ),
+) -> None:
+    """Delete a {{ model.class_name }} entity by its primary identifier."""
+    logger.info("Deleting {{ model.class_name }} entity with ID: %s", entity_id)
+    try:
+        success = await service.delete(entity_id)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{{ model.class_name }} entity with ID '{entity_id}' not found for deletion",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to delete {{ model.class_name }} entity with ID: %s", entity_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete {{ model.class_name }} entity with ID '{entity_id}'",
+        ) from exc
+
+
+router.add_api_route(path="", endpoint=list_entities, methods=["GET"], response_model=list[{{ model.class_name }}ResponseDTO])
+router.add_api_route(path="/", endpoint=list_entities, methods=["GET"], response_model=list[{{ model.class_name }}ResponseDTO], include_in_schema=False)
+
+router.add_api_route(path="", endpoint=create_entity, methods=["POST"], response_model={{ model.class_name }}ResponseDTO, status_code=status.HTTP_201_CREATED)
+router.add_api_route(path="/", endpoint=create_entity, methods=["POST"], response_model={{ model.class_name }}ResponseDTO, status_code=status.HTTP_201_CREATED, include_in_schema=False)
+
+router.add_api_route(path="/{entity_id}", endpoint=get_entity_by_id, methods=["GET"], response_model={{ model.class_name }}ResponseDTO)
+router.add_api_route(path="/{entity_id}/", endpoint=get_entity_by_id, methods=["GET"], response_model={{ model.class_name }}ResponseDTO, include_in_schema=False)
+
+router.add_api_route(path="/{entity_id}", endpoint=update_entity, methods=["PATCH", "PUT"], response_model={{ model.class_name }}ResponseDTO)
+router.add_api_route(path="/{entity_id}/", endpoint=update_entity, methods=["PATCH", "PUT"], response_model={{ model.class_name }}ResponseDTO, include_in_schema=False)
+
+router.add_api_route(path="/{entity_id}", endpoint=delete_entity, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT)
+router.add_api_route(path="/{entity_id}/", endpoint=delete_entity, methods=["DELETE"], status_code=status.HTTP_204_NO_CONTENT, include_in_schema=False)

@@ -1,0 +1,26 @@
+Goal: Design a module using meta_builder (meta_compiler, meta_polymorph, meta_builder_brain) using cli.
+Example: a user management module
+define User type, Address type, Contact type entities
+User requires address
+User can optionally have contacts
+
+the module supports
+    look up of user
+        searchBy name, contact, address
+    creation of user
+    change of address
+    updates to contact
+
+The module shall have the executable python code
+    unit tests
+    integration tests
+----
+As a principle engineer at google, design an module builder using meta_builder.
+Enhancements shall be made to meta_* components as required to support.
+----
+user: This is high level design phase where components needed for generating code for application building blocks.
+Brainstorming session to capture and refine requirements for the application builder.
+
+
+
+

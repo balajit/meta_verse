@@ -1,0 +1,4 @@
+# Prevent environment secrets files from being committed
+secrets.*
+.secrets.*
+*.env.local

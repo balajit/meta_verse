@@ -1,0 +1,27 @@
+Running the application builder stack requires a containerized infrastructure suite, specific system binaries for static code verification, and a set of environment configuration variables.
+
+**Containerized Infrastructure Services (Docker / Docker Compose)**
+
+| Service | Port(s) | Role & Usage |
+| --- | --- | --- |
+| **PostgreSQL 16+** | `5432` | Primary transactional store for entities, immutable revisions, DAG topology metadata, state machine locks, and the transactional outbox table. |
+| **OpenBao** | `8200` | Vault service for key-value secret retrieval and encryption key management. |
+| **Open Policy Agent (OPA)** | `8181` | Policy enforcement sidecar used to evaluate boundary access control rules. |
+| **Apache Kafka / Redpanda** | `9092` | Event broker for the `TransactionalKafkaOutboxWorker` to relay domain event streams. |
+| **OpenTelemetry Collector / Jaeger** | `4317` (gRPC), `4318` (HTTP) | Trace collector for receiving OpenTelemetry spans and W3C trace context data (`traceparent`/`tracestate`). |
+
+**Python Runtime & System Toolchain**
+
+* **Python 3.12+**: Required runtime for `AsyncIO` execution and dynamic Pydantic AST model generation.
+* **`uv` Package Manager**: Used for virtual environment creation and fast dependency locking.
+* **Static Analysis Binaries**: `ruff` and `mypy` must be installed in system `PATH` so the verification engine can invoke sandbox validation runs.
+* **Playwright Dependencies**: Headless browser binaries (`uv run playwright install webkit chromium`) for document extraction and web scraping components.
+
+**Environment Variables (`.env`)**
+
+* **Database Connection**: `DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/bcr_db`
+* **OpenBao Configuration**: `OPENBAO_ADDR=http://localhost:8200`, `OPENBAO_TOKEN=root`, `OPENBAO_KV_ENGINE_PATH=secret/`
+* **Authentication & OIDC**: `OIDC_ISSUER_URL=[https://auth.example.com/](https://auth.example.com/)`, `OIDC_AUDIENCE=bcr-api`, `OIDC_JWKS_URI=[https://auth.example.com/.well-known/jwks.json](https://auth.example.com/.well-known/jwks.json)`
+* **Policy Authorization**: `OPA_SERVER_URL=http://localhost:8181/v1/data/bcr/authz`
+* **Event Broker**: `KAFKA_BOOTSTRAP_SERVERS=localhost:9092`, `KAFKA_OUTBOX_TOPIC=bcr.ecosystem.events`
+* **Observability & Tracing**: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`, `OTEL_SERVICE_NAME=bcr-builder-engine`

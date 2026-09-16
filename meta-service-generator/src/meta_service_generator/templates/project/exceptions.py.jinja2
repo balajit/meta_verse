@@ -1,0 +1,68 @@
+# Generated domain exceptions module
+from __future__ import annotations
+
+from typing import Any
+
+
+class ServiceError(Exception):
+    """Base exception for all domain service errors."""
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "ERR_INTERNAL_SERVICE_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+
+        self.message = message
+        self.error_code = error_code
+        self.details = (
+            dict(details)
+            if details is not None
+            else {}
+        )
+
+
+class BusinessRuleError(ServiceError):
+    """Raised when domain business rule evaluation fails or evaluates false."""
+
+
+class EntityNotFoundError(ServiceError):
+    """Raised when a requested domain entity cannot be found."""
+
+
+class StateTransitionError(ServiceError):
+    """Raised when an invalid FSM state transition is requested."""
+
+
+class PolicyAccessDeniedError(ServiceError):
+    """Raised when an OPA/security policy denies execution."""
+
+    def __init__(
+        self,
+        message: str = "Access denied by security policy.",
+        error_code: str = "ERR_POLICY_ACCESS_DENIED",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            details=details,
+        )
+
+
+class PolicyEvaluationError(ServiceError):
+    """Raised when an OPA/security evaluation fails."""
+
+    def __init__(
+        self,
+        message: str = "Evaluation error has occurred.",
+        error_code: str = "ERR_POLICY_EVAL_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            error_code=error_code,
+            details=details,
+        )

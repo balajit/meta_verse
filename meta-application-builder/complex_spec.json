@@ -1,0 +1,46 @@
+{
+  "model_name": "AccountProfile",
+  "fields": [
+    {
+      "name": "account_id",
+      "type_hint": "UUID",
+      "nullable": false,
+      "default": null
+    },
+    {
+      "name": "username",
+      "type_hint": "str",
+      "nullable": false,
+      "default": "guest_user"
+    },
+    {
+      "name": "is_active",
+      "type_hint": "bool",
+      "nullable": false,
+      "default": true
+    },
+    {
+      "name": "login_count",
+      "type_hint": "int",
+      "nullable": false,
+      "default": 0
+    },
+    {
+      "name": "trust_score",
+      "type_hint": "float",
+      "nullable": false,
+      "default": 1.0
+    },
+    {
+      "name": "last_login",
+      "type_hint": "datetime",
+      "nullable": true,
+      "default": null
+    }
+  ],
+  "metadata": {
+    "domain": "identity",
+    "environment": "staging",
+    "tier": "critical"
+  }
+}

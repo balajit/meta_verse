@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import uuid
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from {{ package_name }}.models.base import Base
+{% for relationship in model.relationships %}
+{% if relationship.target_class_name != model.class_name %}
+from {{ package_name }}.models.{{ relationship.target_class_name | snake_case }}_orm import (
+    {{ relationship.target_class_name }}ORM,
+)
+{% endif %}
+{% endfor %}
+
+
+class {{ model.class_name }}ORM(Base):
+    """SQLAlchemy ORM model for {{ model.class_name }} [source: 8]."""
+
+    __tablename__ = {{ model.table_name | python_literal }}
+
+{% for field in model.fields %}
+    {{ field.name }}: Mapped[{{ field.python_type }}] = mapped_column(
+        {{ field.sql_type }}{% if field.foreign_key_target %},
+        ForeignKey(
+            {{ field.foreign_key_target | python_literal }}{% if field.foreign_key_on_delete %},
+            ondelete={{ field.foreign_key_on_delete | python_literal }}{% endif %}{% if field.foreign_key_on_update %},
+            onupdate={{ field.foreign_key_on_update | python_literal }}{% endif %}
+        ){% endif %},
+        primary_key={{ field.is_primary_key }},
+        nullable={{ field.is_nullable }},
+        unique={{ field.is_unique }},
+        index={{ field.is_indexed }}{% if field.default_value is not none %},
+        default={{ field.default_value | python_literal }}{% elif field.is_primary_key and field.python_type == 'str' %},
+        default=lambda: str(uuid.uuid4()){% endif %}
+    )
+{% endfor %}
+
+{% for relationship in model.relationships %}
+    {% if relationship.cardinality == "N:M" %}
+    {{ relationship.name }}: Mapped[list[{{ relationship.target_class_name }}ORM]] = relationship(
+        "{{ relationship.target_class_name }}ORM",
+        secondary={{ relationship.secondary_table | python_literal }},
+        {% if relationship.back_populates %}
+        back_populates={{ relationship.back_populates | python_literal }},
+        {% endif %}
+        {% if relationship.cascade %}
+        cascade={{ relationship.cascade | join(", ") | python_literal }},
+        {% endif %}
+        lazy={{ relationship.loading.value | python_literal }},
+    )
+    {% elif relationship.cardinality == "1:N" %}
+    {{ relationship.name }}: Mapped[list[{{ relationship.target_class_name }}ORM]] = relationship(
+        "{{ relationship.target_class_name }}ORM",
+        {% if relationship.foreign_key and relationship.ownership.name == "SOURCE" %}
+        primaryjoin="{{ model.class_name }}ORM.id_ == {{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}",
+        foreign_keys=[{{ model.class_name }}ORM.{{ relationship.foreign_key }}],
+        {% elif relationship.foreign_key and relationship.ownership.name == "TARGET" %}
+        primaryjoin="{{ model.class_name }}ORM.id_ == {{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}",
+        foreign_keys=[{{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}],
+        {% endif %}
+        {% if relationship.back_populates %}
+        back_populates={{ relationship.back_populates | python_literal }},
+        {% endif %}
+        {% if relationship.cascade %}
+        cascade={{ relationship.cascade | join(", ") | python_literal }},
+        {% endif %}
+        lazy={{ relationship.loading.value | python_literal }},
+    )
+    {% elif relationship.cardinality == "1:1" %}
+    {{ relationship.name }}: Mapped[{{ relationship.target_class_name }}ORM] = relationship(
+        "{{ relationship.target_class_name }}ORM",
+        {% if relationship.foreign_key and relationship.ownership.name == "SOURCE" %}
+        primaryjoin="{{ model.class_name }}ORM.id_ == {{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}",
+        foreign_keys=[{{ model.class_name }}ORM.{{ relationship.foreign_key }}],
+        {% elif relationship.foreign_key and relationship.ownership.name == "TARGET" %}
+        primaryjoin="{{ model.class_name }}ORM.id_ == {{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}",
+        foreign_keys=[{{ relationship.target_class_name }}ORM.{{ relationship.foreign_key }}],
+        {% endif %}
+        {% if relationship.back_populates %}
+        back_populates={{ relationship.back_populates | python_literal }},
+        {% endif %}
+        {% if relationship.cascade %}
+        cascade={{ relationship.cascade | join(", ") | python_literal }},
+        {% endif %}
+        lazy={{ relationship.loading.value | python_literal }},
+        uselist=False,
+    )
+    {% endif %}
+{% endfor %}

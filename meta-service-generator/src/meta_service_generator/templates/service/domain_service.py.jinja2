@@ -1,0 +1,173 @@
+# Synthesized Middle-Layer Domain Service (REQ-004)
+from __future__ import annotations
+
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meta_telemetry import get_tracer, trace_span
+
+from {{ package_name }}.database import get_db_session
+from {{ package_name }}.extensions.policy import (
+    PolicyGuard,
+    get_policy_guard,
+)
+from {{ package_name }}.models.{{ model.name | snake_case }}_dtos import (
+    {{ model.class_name }}CreateDTO,
+    {{ model.class_name }}ResponseDTO,
+    {{ model.class_name }}SearchDTO,
+    {{ model.class_name }}UpdateDTO,
+)
+from {{ package_name }}.repositories.{{ model.name | snake_case }}_repository import (
+    {{ model.class_name }}Repository,
+)
+
+
+tracer = get_tracer(
+    "{{ package_name }}.service.{{ model.name | snake_case }}"
+)
+
+
+class {{ model.class_name }}DomainService:
+    """Domain Orchestrator linking Policy Guards, Rules Engine, FSM, Workflows, and Repositories."""
+
+    def __init__(
+        self,
+        repository: {{ model.class_name }}Repository,
+        policy_guard: PolicyGuard,
+    ) -> None:
+        self.repository = repository
+        self.policy_guard = policy_guard
+
+    @trace_span("service.get_by_id")
+    async def get_by_id(
+        self,
+        entity_id: str,
+    ) -> {{ model.class_name }}ResponseDTO | None:
+        """Fetch a single entity by primary key with read authorization."""
+        await self.policy_guard.enforce(
+            "{{ model.name }}/read",
+            {"id": entity_id},
+        )
+
+        entity = await self.repository.get_by_id(entity_id)
+        if entity is None:
+            return None
+
+        return {{ model.class_name }}ResponseDTO.model_validate(
+            entity,
+            from_attributes=True,
+        )
+
+    @trace_span("service.search")
+    async def search(
+        self,
+        search_dto: {{ model.class_name }}SearchDTO,
+    ) -> list[{{ model.class_name }}ResponseDTO]:
+        """Search entities matching query criteria with read authorization."""
+        await self.policy_guard.enforce(
+            "{{ model.name }}/read",
+            search_dto.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            ),
+        )
+
+        entities = await self.repository.list_all()
+
+        return [
+            {{ model.class_name }}ResponseDTO.model_validate(
+                entity,
+                from_attributes=True,
+            )
+            for entity in entities
+        ]
+
+    @trace_span("service.create")
+    async def create(
+        self,
+        create_dto: {{ model.class_name }}CreateDTO,
+    ) -> {{ model.class_name }}ResponseDTO:
+        """Persist a new entity instance with write authorization."""
+        await self.policy_guard.enforce(
+            "{{ model.name }}/write",
+            create_dto.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            ),
+        )
+
+        entity = await self.repository.create(
+            **create_dto.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            )
+        )
+        await self.repository.session.commit()
+        await self.repository.session.refresh(entity)
+
+        return {{ model.class_name }}ResponseDTO.model_validate(
+            entity,
+            from_attributes=True,
+        )
+
+    @trace_span("service.update")
+    async def update(
+        self,
+        entity_id: str,
+        update_dto: {{ model.class_name }}UpdateDTO,
+    ) -> {{ model.class_name }}ResponseDTO | None:
+        """Update an existing entity with write authorization."""
+        payload = update_dto.model_dump(
+            by_alias=True,
+            exclude_unset=True,
+        )
+
+        await self.policy_guard.enforce(
+            "{{ model.name }}/write",
+            {"id": entity_id, **payload},
+        )
+
+        updated_entity = await self.repository.update(
+            entity_id,
+            **payload,
+        )
+        if updated_entity is None:
+            return None
+
+        await self.repository.session.commit()
+        await self.repository.session.refresh(updated_entity)
+
+        return {{ model.class_name }}ResponseDTO.model_validate(
+            updated_entity,
+            from_attributes=True,
+        )
+
+    @trace_span("service.delete")
+    async def delete(
+        self,
+        entity_id: str,
+    ) -> bool:
+        """Delete an entity by ID with delete authorization."""
+        await self.policy_guard.enforce(
+            "{{ model.name }}/delete",
+            {"id": entity_id},
+        )
+
+        success = await self.repository.delete(entity_id)
+        if success:
+            await self.repository.session.commit()
+        return success
+
+
+async def get_{{ model.name | snake_case }}_service(
+    session: AsyncSession = Depends(get_db_session),
+    policy_guard: PolicyGuard = Depends(get_policy_guard),
+) -> {{ model.class_name }}DomainService:
+    """FastAPI dependency provider factory for {{ model.class_name }}DomainService."""
+
+    repository = {{ model.class_name }}Repository(session)
+
+    return {{ model.class_name }}DomainService(
+        repository,
+        policy_guard,
+    )

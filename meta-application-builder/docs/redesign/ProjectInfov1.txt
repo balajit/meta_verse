@@ -1,0 +1,141 @@
+Here is the complete functional breakdown of every directory and file across the `meta-application-builder` repository layout:
+
+**Root & Infrastructure Configuration**
+
+* `complex_spec.json`: Sample blueprint application specification AST used for system integration testing and pipeline validation.
+* `docker-compose.yml`: Multi-container orchestrator managing local PostgreSQL, OpenBao, OPA sidecar, and OpenTelemetry services.
+* `main.py`: Top-level application execution entry point initializing root process execution.
+* `otel-collector-config.yaml` / `config/otel-collector-config.yaml`: Telemetry pipeline configuration for routing OpenTelemetry traces and metrics.
+* `pyproject.toml`: Modern Python project build configuration, package dependencies, and tool settings managed via `uv`.
+* `README.md`: High-level system architecture guide, setup commands, and component documentation.
+* `relocate_modules.py`: Developer migration utility script for reorganizing internal package module namespaces.
+* `uv.lock`: Deterministic package dependency lockfile ensuring reproducible builds.
+
+**dist/ & docs/ (Build Artifacts & Architecture Specifications)**
+
+* `dist/`: Build target directory housing compiled wheel (`.whl`) and source tarball (`.tar.gz`) distribution artifacts.
+* `docs/AB_ImplementationPlan.txt` & `AB-Phase0.txt` to `AB-Phase3.txt`: Step-by-step architectural specifications and phased implementation roadmaps.
+* `docs/Feedback.txt`, `First Set of issues.txt`, & `GeminiiRemediation.txt`: Issue tracking logs, peer review feedback, and code remediation task lists.
+
+**scripts/ (Operational Utilities)**
+
+* `scripts/app_driver.py`: Integration test driver running local end-to-end builder workflow runs.
+* `scripts/docker_services.sh`: Shell utility automating local Docker container lifecycles.
+* `scripts/gather_env_vars.py`: Environment variable harvester and runtime setting verification script.
+* `scripts/init_openbao.sh` & `init_openbaov2.sh`: Automation scripts initializing OpenBao vault engines and authentication secrets.
+* `scripts/stack.txt`: Service port mapping and endpoint reference file.
+
+**src/meta_application_builder/audit/ & config/**
+
+* `audit/tamper_evident_ledger.py`: In-memory tamper-evident cryptographic chain logger ensuring log immutability.
+* `config/bootstrap.py`: Application startup bootstrap manager setting up global operational settings.
+* `config/config_bao.py`: OpenBao client wrapper fetching dynamic secrets directly from vault secrets engines.
+
+**src/meta_application_builder/bcr_cas/ (Registry & Content-Addressed Storage)**
+
+* `exceptions.py`: Centralized domain exception hierarchy for registry and storage failures.
+
+
+* `bulk_api/publication_saga.py`: Multi-component publication saga orchestrator handling TTL reservations, atomic commits, and rollbacks.
+
+
+* `bulk_api/resolve_batch.py`: Dependency graph resolver building component URN trees and enforcing lifecycle constraints via NetworkX DAGs.
+
+
+* `cas_service/cas_storage.py`: Content-Addressed Storage engine persisting immutable binary payloads using prefix fan-out directories.
+
+
+* `cas_service/digest_verifier.py`: Streaming SHA-256 hash calculator verifying binary payload data integrity.
+
+
+* `payloads/saga_reservation.yaml` & `urn_validation.json`: Test schemas and payload fixtures for saga workflow verification.
+
+
+* `urn_resolver/lifecycle_state.py`: State transition matrix enforcing allowed lifecycle transitions (`DRAFT`, `ACTIVE`, `DEPRECATED`, `RETIRED`, `ARCHIVED`).
+
+
+* `urn_resolver/urn_parser.py`: Canonical URN parser, path generator, and AST compatibility validator.
+
+
+
+**src/meta_application_builder/cli/ & experience/ (Gateways & Interfaces)**
+
+* `cli/execution_gateway.py`: Command-line interface dispatcher routing invocations to underlying service drivers.
+* `experience/api_gateway/submit_endpoint.py`: API endpoint receiving incoming application blueprint submission requests.
+* `experience/api_gateway/status_endpoint.py`: API endpoint exposing real-time build status tracking.
+* `experience/api_gateway/artifact_endpoint.py`: API endpoint streaming produced build artifacts and generated code binaries.
+* `experience/api_gateway/validate_endpoint.py`: API endpoint providing pre-flight blueprint validation checks.
+* `experience/cli_tool/main.py`: Entry point for the developer CLI experience tool.
+* `experience/cli_tool/direct_mode.py`: Developer execution mode invoking builder engines in-process locally.
+* `experience/cli_tool/remote_mode.py`: Developer execution mode dispatching commands to remote builder HTTP endpoints.
+* `experience/cli_tool/execution_gateway.py`: Gateway parser mapping CLI flags to execution modes.
+* `experience/telemetry/otel_config.py`: OpenTelemetry tracer and metrics exporter initialization provider.
+
+**src/meta_application_builder/compiler_engine/ (Dynamic Code Generation Core)**
+
+* `brain_adapter/ir_sanitizer.py`: Sanitizer cleaning and normalizing dynamic intermediate representation (IR) trees.
+* `compiler_enginer.pu.py`: Legacy pipeline script wrapper executing compilation passes.
+* `meta_compiler/ast_builder.py`: AST parser constructing dynamic compiler AST models.
+* `meta_compiler/pydantic_emitter.py`: Code generator synthesizing dynamic Pydantic schema classes from ASTs.
+* `meta_compiler/sqlalchemy_emitter.py`: Code generator emitting dynamic SQLAlchemy ORM models from AST definitions.
+* `polymorph_adapter/manifest_merger.py`: Merges polymorphic spec overrides and manifests into single execution units.
+* `sandbox/container_runtime.py`: Isolated container runtime runner for evaluating dynamically generated code safely.
+* `validation/payload_guard.py`: Guard checking dynamic code IR for illegal or unsafe AST patterns.
+* `verification/ruff_mypy_runner.py`: Subprocess runner executing Ruff linting and Mypy static type checking on generated code.
+* `verification/temporal_validator.py`: Execution engine checking temporal logic constraints and execution order rules.
+
+**src/meta_application_builder/control_plane/ (Orchestration & Workflow State)**
+
+* `control_plane/api/router.py`: FastAPI router serving control plane orchestration endpoints.
+* `control_plane/orchestration/services/build_application_service.py`: High-level build orchestrator coordinating spec parsing, compilation, and state tracking.
+* `control_plane/outbox/outbox_publisher.py`: Asynchronous event publisher executing transactional outbox record dispatching.
+* `control_plane/outbox/queue_envelope.py`: Data structure defining standardized queue event message envelopes.
+* `control_plane/recovery/recovery/forward_reconciliation.py`: Crash recovery engine reconciling state discrepancies after unexpected system failures.
+* `control_plane/recovery/recovery/retry_jitter.py`: Retry handler executing exponential backoff with full jitter for failed system operations.
+* `control_plane/state_engine/state_engine/dual_lock_fencing.py`: Distributed concurrency manager issuing lock fencing tokens to prevent race conditions.
+* `control_plane/state_engine/state_engine/state_machine.py`: Finite state machine driving build stage transitions and enforcement guards.
+* `control_plane/worker/worker/pipeline_worker.py`: Background consumer worker processing outbox queues and executing asynchronous build pipelines.
+
+**src/meta_application_builder/foundation/ (Security, Policy & Governance)**
+
+* `foundation/docker_infra/docker-compose.yml`: Local Docker service definitions dedicated to foundation subsystem testing.
+* `foundation/governance_rego/governance.rego`: Rego policy rules enforcing master governance compliance standards.
+* `foundation/governance_rego/immutability_rules.rego`: Rego policy rules enforcing specification immutability guarantees.
+* `foundation/governance_rego/tenant_isolation.rego`: Rego policy rules enforcing strict multi-tenant data isolation boundaries.
+* `foundation/governance_rego/opa_evaluator.py`: Python wrapper calling local OPA sidecars to evaluate Rego policies.
+* `foundation/openbao_config/policy_approle.hcl`: Security policy definitions granting AppRole access within OpenBao.
+* `foundation/security_context/claims.py`: Security token models parsing caller role and scope claims.
+* `foundation/security_context/identity.py`: Identity context provider representing authenticated callers across request scopes.
+
+**src/meta_application_builder/persistence/ (Database & Cryptographic Ledger)**
+
+* `persistence/audit/service.py`: Service interface executing database audit logging operations.
+* `persistence/audit/tamper_evident_ledger.py`: Persistence handler writing cryptographic block-chain ledger entries.
+* `persistence/db_session/connection.py`: Asynchronous PostgreSQL engine wrapper and session pool manager.
+* `persistence/event_chain/crypt_chain.py`: Cryptographic ledger linking system state changes into sequential hash chains.
+* `persistence/lineage/closure_manager.py`: Database closure table manager handling transitive component lineage hierarchies.
+* `persistence/migrations/env.py`: Alembic runtime configuration script managing database migration execution.
+* `persistence/models/base.py`: Shared SQLAlchemy declarative ORM base model.
+* `persistence/models/audit.py`: SQLAlchemy ORM model mapping audit record tables.
+* `persistence/models/registry.py`: SQLAlchemy ORM model mapping component registry and dependency entities.
+* `persistence/registry/action_mapping.py`: Mapper connecting domain actions to database operations and audit events.
+
+**src/meta_application_builder/spec_governance/ (Multi-Phase Spec Validation)**
+
+* `phase_a_static/syntax_checker.py`: Static analyzer checking JSON AST schema syntax and SemVer breaking change levels.
+* `phase_a_static/immutability_eval.py`: Evaluator checking whether spec edits respect immutable artifact constraints.
+* `phase_b_topology/networkx_dag.py`: Topological analyzer verifying specification graph acyclicity via NetworkX DAGs.
+* `phase_c_policy/opa_client.py`: Client evaluating AST specs against Open Policy Agent policy sidecars.
+* `schemas/det_schema.py`: Schema generator ensuring deterministic JSON serialization across dynamic models.
+* `schemas/rfc7807_error.py`: Synthesizes standardized RFC 7807 problem detail objects for API error responses.
+* `spec_adapter.py`: Adapter converting external specification formats into canonical internal ASTs.
+
+**tests/ (Automated Test Suites)**
+
+* `bcr_cas/test_bcr_cas.py`: Test suite verifying URN parsing, CAS file persistence, and publication sagas.
+* `compiler_engine/test_compiler_engine.py`: Test suite validating Pydantic/SQLAlchemy model synthesis and IR sanitization.
+* `experience/test_experience.py`: Test suite covering API gateway endpoints and CLI direct/remote modes.
+* `foundation/test_security_context.py`: Test suite checking identity contexts, token claims, and OPA Rego rules.
+* `orchestration/test_orchestration.py`: Test suite covering control plane build pipelines, state engines, and workers.
+* `persistence/test_crypt_chain.py` & `test_db_session.py` & `test_edge_cases.py`: Test suites verifying cryptographic event chains, database sessions, and lock contention handling.
+* `spec_governance/test_validation_pipeline.py`: End-to-end tests covering all phases of the spec validation pipeline.

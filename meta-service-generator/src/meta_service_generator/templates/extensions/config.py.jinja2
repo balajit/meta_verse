@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from meta_config import MetaBaseSettings
+from pydantic import Field
+from pydantic_settings import SettingsConfigDict
+
+
+class Settings(MetaBaseSettings):
+    """Strongly typed generated application configuration."""
+
+    service_name: str = Field(
+        default={{ service_name | python_literal }}
+    )
+
+    environment: str = Field(
+        default="production"
+    )
+
+    database_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/{{ service_name | snake_case }}",
+        alias="DATABASE_URL",
+    )
+    opa_url: str = Field(
+        default="http://localhost:8181",
+        alias="OPA_SERVER_URL",
+    )
+
+    opa_timeout_seconds: float = Field(
+        default=5.0,
+        alias="OPA_TIMEOUT_SECONDS",
+        gt=0,
+    )
+
+    opa_max_retries: int = Field(
+        default=2,
+        alias="OPA_MAX_RETRIES",
+        ge=0,
+        le=10,
+    )
+
+    model_config = SettingsConfigDict(
+        frozen=True,
+        extra="forbid",
+        populate_by_name=True,
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
+
+
+settings = Settings()

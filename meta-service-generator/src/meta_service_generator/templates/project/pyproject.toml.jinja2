@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = {{ service_name | python_literal }}
+version = {{ version | python_literal }}
+description = "Synthesized production microservice"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "python-statemachine>=2.1.0",
+    "rule-engine>=4.2.0",
+    "tenacity>=8.2.0",
+    "httpx>=0.27.0",
+    "meta-config",
+    "meta-telemetry",
+    "meta_compiler",
+    "meta_polymorph",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/{{ package_name }}"]
+
+[tool.mypy]
+ignore_missing_imports = true
+disable_error-code = ["import-untyped", "import-not-found", "untyped-decorator"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

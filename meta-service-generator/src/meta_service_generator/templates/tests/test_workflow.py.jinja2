@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+import pytest
+
+from {{ package_name }}.execution.{{ workflow.name | snake_case }}_workflow import (
+    {{ workflow.name | pascal_case }}WorkflowRunner,
+)
+
+
+@pytest.mark.asyncio
+async def test_workflow_execution() -> None:
+    async def mock_step(
+        payload: dict,
+        results: dict,
+    ) -> str:
+        return "completed"
+
+    handlers = {
+{% for step in workflow.steps %}
+        {{ step.name | python_literal }}: mock_step,
+{% endfor %}
+    }
+
+    runner = {{ workflow.name | pascal_case }}WorkflowRunner(
+        step_handlers=handlers
+    )
+
+    results = await runner.execute(
+        payload={}
+    )
+
+    assert len(results) == {{ workflow.steps | length }}

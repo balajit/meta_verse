@@ -1,0 +1,2072 @@
+Role: Principal System Architect
+
+# Application Builder Engine Architectural Specification
+
+## 1. Executive Summary & Core Objectives
+
+**1.1 System Purpose**
+The Meta-Compiler Platform provides an extensible, asynchronous architectural engine designed for dynamic schema compilation, runtime model synthesis, and topology-validated graph execution. By decoupling infrastructure definitions from static deployment lifecycles, the system dynamically synthesizes Pydantic models via `meta_polymorph`, validates pipeline dependencies using NetworkX DAG structures within `meta_builder_brain`, and enforces state isolation across defined system boundaries. The system relies on the Blueprint Component Registry (`urn:meta:bcr:...`) as the authoritative registry for versioned specification manifests, state plane contracts, and spec deltas.
+
+**1.2 Business Drivers**
+
+* **Runtime Schema Elasticity**: Eliminates deployment overhead and redeployment cycles for minor data model updates by compiling dynamic Pydantic schemas on demand from spec deltas.
+* **Decoupled Boundary Governance**: Offloads authorization decisions and dynamic credential management to sidecar Open Policy Agent (OPA) engines and OpenBao servers, isolating security controls from internal business logic.
+* **Deterministic Execution Pipelines**: Prevents cyclic dependencies and execution deadlocks by validating pipeline graphs prior to launching AsyncIO task sequences.
+* **Contract Standardization**: Unifies specification contracts across external, boundary, and internal planes using structured URN identifiers (`urn:meta:bcr:...`).
+* **High-Throughput Asynchronous State Persistence**: Maintains low latency and persistent state auditability through pooled, non-blocking PostgreSQL connections managed via SQLAlchemy and AsyncPG.
+---
+
+
+---
+
+# 2. System Boundary Architecture & Integration Contracts
+
+The Meta-Compiler Platform isolates functional boundaries, runtime state, and security controls across a decoupled **Six-Plane Architecture**. By separating user interaction, orchestration, policy evaluation, specification resolution, code compilation, and storage, the platform enforces strict data governance, zero split-brain ambiguity, and predictable failure domain isolation.
+
+```
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 1. EXPERIENCE PLANE                                                    │
+ │  ┌───────────────────────┐         ┌────────────────────────────────┐  │
+ │  │ REST API Gateway      │         │ CLI Tooling (Direct / Remote)  │  │
+ │  └───────────┬───────────┘         └───────────────┬────────────────┘  │
+ └──────────────┼─────────────────────────────────────┼───────────────────┘
+                │ HTTP/gRPC Payload                   │ In-Process / Remote RPC
+                ▼                                     ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 2. CONTROL / ORCHESTRATION PLANE                                       │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ Build Job Orchestrator (Durable Queue, Leases, Saga Outbox)      │  │
+ │  └───────────┬──────────────────────────────────────────────────────┘  │
+ └──────────────┼─────────────────────────────────────────────────────────┘
+                │ Identity Context Token
+                ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 3. GOVERNANCE PLANE                                                    │
+ │  ┌───────────────────────┐         ┌────────────────────────────────┐  │
+ │  │ Open Policy Agent     │ ──────> │ OpenBao Secrets Manager        │  │
+ │  │ (OPA Policy Evaluation)│         │ (Dynamic Secret Lease Exchange)│  │
+ │  └───────────────────────┘         └───────────────┬────────────────┘  │
+ └────────────────────────────────────────────────────┼───────────────────┘
+                                                      │ Auth'd Transport Context
+                                                      ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 4. REGISTRY PLANE                                                      │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ Blueprint Component Registry (BCR - `urn:meta:bcr:...`)          │  │
+ │  └───────────┬──────────────────────────────────────────────────────┘  │
+ └──────────────┼─────────────────────────────────────────────────────────┘
+                │ Resolved AST & Specification Lineage
+                ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 5. COMPILATION PLANE                                                   │
+ │  ┌──────────────────────────────────────────────────────────────────┐  │
+ │  │ Engine Facade (`meta_builder`)                                    │  │
+ │  │   ├── Synthesis Agent (`meta_builder_brain`)                     │  │
+ │  │   ├── Polymorphic Delta Merger (`meta_polymorph`)               │  │
+ │  │   └── 5-Stage Type & AST Compiler (`meta_compiler`)              │  │
+ │  └───────────┬──────────────────────────────────────────────────────┘  │
+ └──────────────┼─────────────────────────────────────────────────────────┘
+                │ Compiled ASTs, Event Logs, and Staged Artifacts
+                ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 6. PERSISTENCE PLANE                                                   │
+ │  ┌───────────────────────────┐     ┌────────────────────────────────┐  │
+ │  │ Content-Addressed Storage  │     │ PostgreSQL DB Engine           │  │
+ │  │ (Logical CAS Blob Service)│     │ (Projections & Job Audits)     │  │
+ │  └───────────────────────────┘     └────────────────────────────────┘  │
+ └────────────────────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+## 2.1 Six-Plane Functional Scope & Authority Map
+
+1. **Experience Plane**: Manages client interaction protocols across external interfaces. Ingests raw specifications via RESTful HTTP/gRPC endpoints or local CLI invocations.
+2. **Control / Orchestration Plane**: Manages build execution lifecycles, durable job queueing, worker lease allocations, cancellation signals, and transactional publication outboxes.
+3. **Governance Plane**: Enforces identity extraction, tenant boundary isolation, RBAC/ABAC Rego policies via Open Policy Agent (OPA), and dynamic secret injection via OpenBao.
+4. **Registry Plane**: Authoritative source for all software blueprints, URN resolution (`urn:meta:bcr:...`), versioned component states (`DRAFT`, `ACTIVE`, `DEPRECATED`, `RETIRED`), and inheritance graph lineages.
+5. **Compilation Plane**: Coordinates model synthesis (`meta_builder_brain`), polymorphic manifest merging (`meta_polymorph`), and 5-stage AST compilation (`meta_compiler`).
+6. **Persistence Plane**: Enforces multi-tenant data storage split between immutable raw binary CAS blobs, append-only WORM log streams, and relational PostgreSQL database projections.
+
+---
+
+## 2.2 Data Object Authority Matrix
+
+To prevent split-brain state anomalies across distributed components, system authority is mapped strictly to single authoritative sources. Downstream database representations (such as PostgreSQL specifications_registry or artifact_manifests) operate purely as read projections, transactional outboxes, or localized caches.
+Data Object / Artifact,Authoritative System (SoR),Consumer / Cache Layer,Mutation Owner,Mutation Protocol,Governance & Integrity Safeguards
+Blueprint Manifest & AST,Registry Plane (BCR),"PostgreSQL specifications_registry (Cache), Worker Memory",BCR Engine,URN Registration API (POST /v1/registry/...),Write-once immutable payloads; canonical SHA-256 digest mapping.
+Blueprint Lifecycle State,Registry Plane (BCR),"PostgreSQL specifications_registry projection, Redis Cache",BCR Engine,State Machine Transition Transaction,"Version-specific states (DRAFT, ACTIVE, DEPRECATED, RETIRED); floating component aliases prohibited."
+URN → CAS Address Map,Registry Plane (BCR),PostgreSQL artifact_manifests projection,BCR Engine,Idempotent Saga Commit (POST /v1/registry/artifacts/commit),"Reserved-to-Active state transitions; duplicate URN writes with matching digests yield idempotent 200 OK, mismatches yield 409 Conflict."
+CAS Code Blob,Logical CAS Service,Local Worker Staging Filesystem (/cas/staging),CAS Writer Subsystem,Atomic Promotion & SHA-256 Digest Verification,Immutable payload storage (/cas/sha256/xx/yy/...); content-addressed verification on read; purge staging files on abort.
+Build Job Execution State,Persistence Plane (build_job_audit),"API Status Polling (GET /v1/build/status/{job_id}), Control Plane",Control Plane Orchestrator,Atomic Dual-Lock Update (lease_generation + version_id),Monotonic worker lease fencing; optimistic locking; single atomic unit status transition across canonical 14-state pipeline.
+Build Audit Event Stream,Persistence Plane (build_job_events),"Log Aggregators, Observability Dashboards",Event Logger Subsystem,Append-Only AsyncPG Batch Stream,Cryptographically chained events (Hn​=SHA256(Hn−1​∥Event Payload)); periodic HN​ signed checkpoints anchored to external WORM storage.
+Artifact Provenance & Manifest,Registry Plane (BCR),meta_builder PostgreSQL projection (artifact_manifests),BCR Engine,Saga Outbox Publication Transaction,"Contains build_input_sha256, policy_bundle_sha256, and HSM/KMS digital signatures; published as a single atomic unit."
+Build Reproducibility Manifest,Compilation Plane (meta_builder),BCR Reference Index,Build Orchestrator,Canonical Hash Digest Generation,"Closed canonical JSON representation capturing exact compiler, policy, and dependency versions; computes BuildInputDigest."
+---
+
+## 2.3 Component Responsibilities & Boundary Protocols
+
+| Subsystem / Engine | Plane Assignment | Core Responsibilities | Ingress / Egress Protocols | Security & Boundary Safeguards |
+| --- | --- | --- | --- | --- |
+| **API Gateway / CLI** | Experience Plane | Ingests build specs, parses HTTP/CLI flags, validates request payloads, issues job IDs. | **Ingress:** HTTPS / gRPC / CLI<br>
+
+<br>**Egress:** gRPC (Internal Transport) | Strict rate limiting, TLS 1.3 termination, payload schema verification. |
+| **Build Orchestrator** | Control / Orchestration Plane | Manages job state transitions, worker lease heartbeats, idempotency keys, and publication Sagas. | **Ingress:** Internal Queue / gRPC<br>
+
+<br>**Egress:** Internal RPC / DB Driver | Fencing tokens (`lease_generation`), atomic version increments (`version_id`). |
+| **Open Policy Agent (OPA)** | Governance Plane | Evaluates authorization contexts, tenant isolation boundaries, and spec immutability Rego rules. | **Ingress:** Local gRPC / REST<br>
+
+<br>**Egress:** N/A (Stateless Evaluation) | Decoupled policy evaluation; zero business-logic coupling. |
+| **OpenBao Secrets Server** | Governance Plane | Dynamically issues short-lived secret leases, database credentials, and signing keys. | **Ingress:** HTTPS / REST<br>
+
+<br>**Egress:** Secret Injection Stream | Path-based ACLs, dynamic lease TTL enforcement, automatic credential revocation. |
+| **Blueprint Component Registry** | Registry Plane | Immutably indexes blueprints, executes URN graph traversals, and enforces state machine transitions. | **Ingress:** gRPC / Internal RPC<br>
+
+<br>**Egress:** JSON / YAML AST Schemas | URN schema validation, write-once immutable storage for `ACTIVE` versions. |
+| **Meta-Compiler Facade** | Compilation Plane | Coordinates AST compilation across `meta_builder_brain`, `meta_polymorph`, and `meta_compiler`. | **Ingress:** Normalized Manifest IR<br>
+
+<br>**Egress:** Formatted Python Code / ASTs | Zero-tolerance quality gates (`ruff`, `mypy`), NetworkX graph cycle detection. |
+| **PostgreSQL Database** | Persistence Plane | Persists execution job states, append-only log events, and read-optimized lineage projections. | **Ingress:** AsyncPG / SQLAlchemy<br>
+
+<br>**Egress:** Relational Record Sets | VPC subnet isolation, AES-256 encryption at rest, PostgreSQL Row-Level Security (RLS). |
+| **Logical CAS Service** | Persistence Plane | Stores immutable target output binaries addressed strictly by SHA-256 digests. | **Ingress:** Binary Stream / Storage API<br>
+
+<br>**Egress:** Immutable Code Blobs | Atomic filesystem writes (`/staging` $\rightarrow$ `/cas`), SHA-256 integrity verification on read. |
+
+---
+
+## 2.4 Decoupled Governance & Execution Boundaries
+
+All operational executions strictly follow a decoupled pipeline flow to guarantee that security enforcement occurs prior to business logic invocation:
+
+```
+  ┌──────────────────┐
+  │ 1. AUTHENTICATE  │ ──> Validate OIDC JWT Bearer Token & extract claims.
+  └────────┬─────────┘
+           ▼
+  ┌──────────────────┐
+  │ 2. IDENTIFY      │ ──> Extract Context: Tenant ID, User ID, Requested URN Scope.
+  └────────┬─────────┘
+           ▼
+  ┌──────────────────┐
+  │ 3. AUTHORIZE     │ ──> Execute OPA Rego evaluation against Tenant & URN policies.
+  └────────┬─────────┘
+           ▼
+  ┌──────────────────┐
+  │ 4. ACQUIRE LEASE │ ──> Retrieve short-lived dynamic credentials from OpenBao.
+  └────────┬─────────┘
+           ▼
+  ┌──────────────────┐
+  │ 5. OPERATE       │ ──> Dispatch payload to Compilation and Registry Planes.
+  └──────────────────┘
+
+```
+
+* **Direct Mode Boundary Guarantee**: Local CLI execution operating in **Direct Mode** bypasses network transport layers for low-latency in-process execution. It **does not** bypass governance semantics. Direct Mode natively instantiates local identity contexts, evaluates OPA policy modules in-process, and enforces identical tenant and authorization guardrails as Remote REST modes.
+---
+
+I have reviewed the architectural specification and expanded **Section 3.1: Specification Management Interface** with concrete schemas, request/response payloads, parameter signatures, and CLI options.
+
+---
+3. Data Architecture & Reproducibility
+
+This section updates event logging, graph retrieval complexities, and resource management. The specific sub-sections updated are:
+
+    Audit Event Normalization: Replaces JSONB arrays with an append-only build_job_events table anchored to a WORM store.
+
+    DAG Closure Complexity: Corrects graph retrieval complexity from O(1) to proportional complexity using precomputed closure tables.
+
+    Build Reproducibility Manifest: Enforces closed build inputs to guarantee idempotency.
+
+    Resource Admission Controls: Replaces the static 512 MB memory limit with explicit tenant-level quotas and workload admission controls.
+
+
+### 3.1 Specification Management Interface
+
+**Functional Scope:**
+
+The Specification Management Interface provides entry points (REST API and CLI) to ingest raw provider domain specifications, trigger validation runs, initiate component generation builds, poll execution progress, and retrieve output artifact manifests. It orchestrates execution flow into the Hybrid Governance & Validation Engine and coordinates spec retrieval and artifact registration with the Blueprint Component Registry (BCR).
+
+The interface supports two distinct execution modes:
+
+* **Direct Mode (`--mode direct`)**: Executes core python modules in-process for local development, offline builds, and CI runners. Bypasses network transport protocols but **strictly enforces** local identity context instantiation, OPA policy evaluation, tenant scoping, and spec lifecycle checks in-process.
+* **Remote Mode (`--mode remote`)**: Acts as an HTTP/REST API client interacting with the centralized Application Builder Engine over TLS 1.3.
+
+---
+
+#### 3.1.1 Authentication & Workload Identity Contracts
+
+All HTTP REST requests and Direct Mode invocations must supply explicit security credentials mapped to defined tenant boundaries.
+
+* **Header Contracts:**
+* `Authorization: Bearer <JWT>`: Standard OAuth2 / OIDC bearer token (RS256 signed) carrying `iss`, `sub`, and `tenant_id` claims.
+* `X-Workload-Identity`: Optional short-lived token for CI/CD runners, exchanging platform identities (e.g., GitHub Actions OIDC, AWS IRSA) for ephemeral build permissions.
+* `Idempotency-Key: <UUIDv4>`: Mandatory unique client key for mutation endpoints (`POST /v1/build/submit`).
+
+
+
+---
+
+#### 3.1.2 Transactional Idempotency Model
+
+To guarantee at-most-once job creation during network retries or gateway failures, submission requests are governed by a transactional database idempotency table.
+
+```sql
+CREATE TABLE build_idempotency_keys (
+    tenant_id UUID NOT NULL,
+    idempotency_key VARCHAR(255) NOT NULL,
+    request_sha256 CHAR(64) NOT NULL,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, idempotency_key)
+);
+
+```
+
+**Submission Atomic Execution Sequence:**
+
+```
+BEGIN TRANSACTION;
+  1. INSERT INTO build_idempotency_keys (tenant_id, idempotency_key, request_sha256, job_id, expires_at);
+     -- On Unique Violation (tenant_id, idempotency_key):
+     --   IF request_sha256 matches existing -> RETURN existing job_id (200/202)
+     --   IF request_sha256 differs -> ABORT & RETURN 409 Conflict
+  2. INSERT INTO build_job_audit (job_id, tenant_id, status, ...);
+  3. INSERT INTO build_queue_outbox (job_id, payload, ...);
+COMMIT;
+
+```
+
+---
+
+#### 3.1.3 API Endpoints, Parameters & Payloads
+
+### Architectural Updates to Section 3.1.3: API Endpoints, Parameters & Payloads
+
+To close the identified review gaps—specifically regarding machine-readable error standards (Item #43), request bounds enforcement (Item #36), target runtime compatibility (Item #46), URI decoupling (Item #44), and idempotency tracking—Section 3.1.3 is updated as follows:
+
+---
+
+#### 3.1.3 API Endpoints, Parameters & Payloads
+
+##### 1. Async Build Generation (`POST /v1/build/submit`)
+
+Submits a domain specification or URN bundle reference for pipeline processing and code synthesis.
+
+* **Headers:**
+* `Idempotency-Key` (string, required): UUIDv4 transaction identifier.
+* `Authorization` (string, required): Bearer JWT carrying OIDC claims (`iss`, `sub`, `tenant_id`).
+
+
+* **Query Parameters:**
+* `async` (boolean, default: `true`): Executes build asynchronously via durable queue.
+* `register_bcr` (boolean, default: `true`): Enables automatic registration of generated artifact hashes back to BCR.
+
+
+* **Request Payload (`application/json`):**
+
+```json
+{
+  "build_config": {
+    "target_languages": ["python_pydantic", "async_sqlalchemy", "temporal_workflow"],
+    "target_runtime_versions": {
+      "python": "3.12.4",
+      "pydantic": "2.8.0",
+      "sqlalchemy": "2.0.30"
+    },
+    "emit_tarball": true,
+    "strict_governance": true,
+    "admission_bounds": {
+      "max_ast_nodes": 10000,
+      "max_payload_bytes": 10485760,
+      "max_depth": 32
+    }
+  },
+  "specification_input": {
+    "target_urn": "urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0",
+    "base_blueprint_urn": "urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0",
+    "delta_spec": {
+      "overrides": [
+        {
+          "target_attribute": "postal_code.default_format",
+          "value": "^[A-Z][0-9][A-Z] [0-9][A-Z][0-9]$",
+          "justification": "Canadian market extension"
+        }
+      ],
+      "custom_attributes": {
+        "service_tier": {
+          "type": "STRING",
+          "immutability": "OVERRIDABLE",
+          "searchable": true
+        }
+      }
+    }
+  }
+}
+
+```
+
+* **Response Payload (`202 Accepted`):**
+
+```json
+{
+  "job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "status": "QUEUED",
+  "created_at": "2026-08-29T09:29:11Z",
+  "status_url": "/v1/build/status/job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9"
+}
+
+```
+
+---
+
+##### 2. Dry-Run Validation (`POST /v1/build/validate`)
+
+Performs Phase A (pure static/schema/bounds), Phase B (BCR graph resolution/topology), and Phase C (OPA policy/tenant scope) checks without modifying BCR or queueing build jobs.
+
+* **Request Payload (`application/json`):**
+
+```json
+{
+  "validate_governance_only": false,
+  "specification_input": {
+    "base_blueprint_urn": "urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0",
+    "delta_spec": {
+      "overrides": [
+        {
+          "target_attribute": "subscriber_id.type",
+          "value": "INTEGER"
+        }
+      ]
+    }
+  }
+}
+
+```
+
+* **Response Payload (`422 Unprocessable Entity` - Standard RFC-7807 Error):**
+
+```json
+{
+  "type": "https://meta-builder.internal/errors/governance-violation",
+  "title": "Immutability Rule Violation",
+  "status": 422,
+  "code": "MBR-004",
+  "detail": "Field 'subscriber_id.type' is marked as FINAL in base blueprint 'urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0' and cannot be overridden.",
+  "instance": "/v1/build/validate",
+  "invalid_params": [
+    {
+      "name": "delta_spec.overrides[0].target_attribute",
+      "reason": "Attempted override of FINAL attribute tier"
+    }
+  ]
+}
+
+```
+
+---
+
+##### 3. Job Status & Diagnostics (`GET /v1/build/status/{job_id}`)
+
+Retrieves execution status, stage tracking, active worker leasing information, and failure diagnostics across the canonical 14-state pipeline.
+
+* **Path Parameters:** `job_id` (UUID, required) - Unique build identifier.
+* **Response Payload (`200 OK`):**
+
+```json
+{
+  "job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "tenant_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "status": "PROCESSING",
+  "current_stage": "COMPILING",
+  "sub_state_flags": {
+    "cancel_requested": false,
+    "retry_wait": false
+  },
+  "progress_percentage": 65,
+  "lease_generation": 2,
+  "trace_context": {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7"
+  },
+  "started_at": "2026-08-29T09:29:12Z"
+}
+
+```
+
+---
+
+##### 4. Artifact Retrieval (`GET /v1/build/artifacts/{job_id}`)
+
+Fetches completed artifact pointers, CAS content digests, digital signatures, and target runtime compatibility constraints.
+
+* **Path Parameters:** `job_id` (UUID, required)
+* **Response Payload (`200 OK`):**
+
+```json
+{
+  "job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "tenant_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "status": "COMPLETED",
+  "completed_at": "2026-08-29T09:29:18Z",
+  "registered_bcr_urn": "urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0",
+  "build_reproducibility_digest": "4f8a3c89b21e05d9e111a93e84711d9a2048f1019d42e3b0c44298fc1c149afb",
+  "provenance": {
+    "source_spec_digest": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+    "policy_bundle_digest": "7c83492048f1res_tok_9942a0fe-3b1a-41d9-8132",
+    "kms_signature": "MEQCID3k8...zI1T8="
+  },
+  "artifacts": [
+    {
+      "type": "PYDANTIC_MODELS",
+      "cas_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "download_url": "/v1/artifacts/download/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "type": "ASYNC_SQLALCHEMY",
+      "cas_sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+      "download_url": "/v1/artifacts/download/a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+    }
+  ]
+}
+
+```
+
+---
+
+#### 3.1.4 CLI Interface & Invocation Profiles
+
+```bash
+# Direct Mode (In-Process Execution with Local Identity & OPA Policy Evaluation)
+meta-builder build submit \
+  --mode direct \
+  --tenant-id a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11 \
+  -f ./specs/subscriber_delta.yaml \
+  --target-urn urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0 \
+  --register-bcr
+
+# Remote Mode (REST Gateway Delegation with Workload Identity Profile)
+meta-builder build submit \
+  --mode remote \
+  --server https://builder-engine.internal.net \
+  --workload-identity-token $CI_WORKLOAD_JWT \
+  --idempotency-key "c03f44e1-2294-4d87-9d2a-89a19c63b4f2" \
+  -f ./specs/subscriber_delta.yaml \
+  --target-urn urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0 \
+  --register-bcr
+
+```
+
+```
+
+---
+
+
+### 3.2 Hybrid Governance & Validation Engine
+
+Here is the updated **Section 3.2: Hybrid Governance & Validation Engine** reflecting the co-architect review feedback, followed by the corresponding **Remediation Tracking Register Ledger** detailing the specific gaps resolved in this revision.
+
+---
+
+### 3.2 Hybrid Governance & Validation Engine
+
+The **Hybrid Governance & Validation Engine** acts as the enforcement gatekeeper for the Meta-Compiler Platform. It verifies incoming provider domain specifications, untrusted LLM-synthesized intermediate representations (IRs), and delta extensions against immutability rules, topological constraints, and security policies before AST compilation.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                  HYBRID GOVERNANCE & VALIDATION ENGINE                           │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐  │
+│  │ PHASE A: PURE STATIC │   │ PHASE B: RESOLUTION  │   │ PHASE C: POLICY &    │  │
+│  │  & STRUCTURAL CHECKS │──>│  & TOPOLOGY CHECKS   │──>│  GOVERNANCE CHECKS   │  │
+│  │ (Offline / In-Proc)  │   │ (BCR Graph / State)  │   │ (OPA Rego / Tenant)  │  │
+│  └──────────────────────┘   └──────────────────────┘   └──────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+#### 3.2.1 Granular Immutability & Permission Matrix
+
+Immutability rules govern how extending or inheriting specifications (e.g., Provider tier) interact with parent attributes (e.g., Global or Industry blueprints). To prevent illegal structural modifications on containers, objects, and traits, field governance enforces discrete operation-level permission controls.
+
+* **Immutability Permission Tiers:**
+* **`FINAL`**: System invariant. Immutable field or structural node. Inheritance is strictly read-only.
+
+
+* **`EXTENDABLE`**: Structural container (array, map, or trait set). Extending specs may append new items or keys, but cannot mutate, overwrite, or delete existing inherited items.
+
+
+* **`OVERRIDABLE`**: Fully mutable node. Extending specs may alter values, default configurations, validation regexes, display metadata, or explicitly mark fields as disabled.
+
+
+
+
+
+| Base Immutability Tier | `READ / INHERIT` | `ADD / APPEND` | `REPLACE / MUTATE` | `DELETE` | `DISABLE` | Enforcement Result on Breach |
+| --- | --- | --- | --- | --- | --- | --- |
+| **`FINAL`** | **ALLOWED** | REJECT | REJECT | REJECT | REJECT | Hard Governance Fault (`422` / `MBR-004`) |
+| **`EXTENDABLE`** | **ALLOWED** | **ALLOWED** | REJECT | REJECT | REJECT | Structural Breach Fault (`422` / `MBR-005`) |
+| **`OVERRIDABLE`** | **ALLOWED** | **ALLOWED** | **ALLOWED** | **ALLOWED** | **ALLOWED** | Validation Pass |
+
+---
+
+#### 3.2.2 Decoupled Three-Phase Validation Pipeline
+
+Validation is decoupled into three sequential, isolated phases. This separation enables low-latency offline execution in Direct Mode, isolates failure domains, and prevents unnecessary network calls to external components when basic syntax or type checks fail.
+
+```
+                  ┌────────────────────────────────────────┐
+                  │ Ingest Specification / Untrusted LLM IR│
+                  └───────────────────┬────────────────────┘
+                                      │
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ PHASE A: Pure Static & Structural Validation (Offline Capable)         │
+  │  ├── DET Syntax & JSON/YAML Format Linting                             │
+  │  ├── Type Safety & Regex Verification                                  │
+  │  ├── Untrusted LLM IR Normalization & Schema Sanitization              │
+  │  ├── Pre-Allocation Admission Checks (Max AST Nodes & Payload Bytes)   │
+  │  └── Field-Level Immutability Matrix Evaluation                        │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │ Pass
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ PHASE B: Resolution & Dependency Topology Validation                   │
+  │  ├── BCR Lineage & Reference URN Existence Verification                │
+  │  ├── Dependency Lifecycle State Validation (ACTIVE vs RETIRED)         │
+  │  └── Directed Acyclic Graph (DAG) Cycle Detection (NetworkX)           │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │ Pass
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ PHASE C: Policy & Authorization Governance Validation                  │
+  │  ├── Open Policy Agent (OPA) Rego Rule Evaluation                      │
+  │  ├── Multi-Tenant Namespace Isolation Verification                    │
+  │  └── Role-Based / Attribute-Based Access Control (RBAC/ABAC)           │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │ Pass
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │  Hand off AST to Compilation Engine    │
+                  └────────────────────────────────────────┘
+
+```
+
+##### Phase A: Pure Static & Structural Validation (In-Process / Offline)
+
+* **Syntax & DET Schema Verification**: Validates payload structure against canonical Domain Entity Template (DET) definitions in-memory.
+* **Untrusted LLM Synthesis Gating**: Inputs originating from LLM-driven synthesis (`meta_builder_brain`) are treated as unvalidated input. They undergo structural normalization, type lowering, and schema sanitization before proceeding.
+* **Pre-Allocation Admission Controls**: Evaluates spec complexity prior to worker resource allocation. Rejects builds exceeding tenant admission bounds (e.g., `max_ast_nodes > 10000` or `max_payload_bytes > 10MB`) upfront to protect worker clusters from memory exhaustion.
+
+
+* **Immutability Rule Evaluation**: Evaluates extending deltas against parent field constraints using the Granular Immutability Matrix.
+
+
+
+##### Phase B: Resolution & Dependency Topology Validation (Registry Scope)
+
+* **URN Resolution & Existence**: Resolves all referenced parent and component URNs against the Blueprint Component Registry (BCR) system of record.
+* **Lifecycle State Enforcement**: Enforces transitive state rules across dependent specifications:
+* `ACTIVE` dependencies $\rightarrow$ Pass.
+* `DEPRECATED` dependencies $\rightarrow$ Pass with system audit warning (or halt if `--disallow-deprecated` is set).
+* `RETIRED` or `DRAFT` dependencies $\rightarrow$ Reject with lifecycle fault (`MBR-007`).
+
+
+* **Topological Cycle Detection**: Constructs a NetworkX DAG of component relationships to verify that the graph is strictly acyclic ($O(V + E)$ complexity). Enforces graph boundary bounds (`max_depth: 32`, `max_nodes: 10000`).
+
+##### Phase C: Policy & Authorization Governance Validation (Governance Scope)
+
+* **Decoupled OPA Evaluation**: Evaluates authorization contexts and security claims against OPA Rego policies.
+* **Tenant Isolation**: Enforces multi-tenant segregation, ensuring tenants cannot reference or extend private URNs outside their allocated namespace scope (`urn:meta:bcr:provider:{tenant_id}:*`).
+* **Direct Mode Parity Guarantee**: Direct Mode CLI execution runs identical Phase A, B, and C policies in-process using local policy bundles, ensuring security parity regardless of transport protocol.
+
+---
+
+#### 3.2.3 Error Handling & RFC-7807 Payload Standardization
+
+When validation fails, the engine aggregates all errors across the active phase into a single payload conforming to **RFC-7807 (Problem Details for HTTP APIs)**. Machine-readable error codes (`MBR-001` through `MBR-010`) decouple programmatic client handling from human-readable detail strings.
+
+* **HTTP Status Code Mapping:**
+* `422 Unprocessable Entity`: Schema, immutability, or topological cycle failure in Phase A or B.
+
+
+* `403 Forbidden`: OPA evaluation completed successfully, but tenant authorization or policy access was explicitly denied.
+
+
+* `503 Service Unavailable`: OPA governance engine socket timed out ($> 200\text{ ms}$) or BCR registry dependency is unreachable (Enforces Fail-Closed security with `Retry-After: 15`).
+
+
+
+
+
+```json
+{
+  "type": "https://meta-builder.internal/errors/governance-validation-failed",
+  "title": "Domain Specification Governance Failure",
+  "status": 422,
+  "code": "MBR-004",
+  "detail": "Specification validation failed in Phase A and Phase B across 2 rules.",
+  "instance": "/v1/build/validate",
+  "invalid_params": [
+    {
+      "name": "delta_spec.overrides[0].target_attribute",
+      "rule": "IMMUTABILITY_VIOLATION",
+      "severity": "ERROR",
+      "phase": "PHASE_A",
+      "code": "MBR-004",
+      "reason": "Attempted illegal 'REPLACE' operation on field 'subscriber_id.type' marked as FINAL in base blueprint 'urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0'."
+    },
+    {
+      "name": "specification_input.referenced_artifact_urns[1]",
+      "rule": "RETIRED_DEPENDENCY_REFERENCED",
+      "severity": "ERROR",
+      "phase": "PHASE_B",
+      "code": "MBR-007",
+      "reason": "Referenced dependency 'urn:meta:bcr:global:primitives:LegacyAddress:v0.9.0' is in RETIRED state and cannot be used for application compilation."
+    }
+  ],
+  "timestamp": "2026-08-29T11:45:00Z"
+}
+
+```
+
+---
+
+
+
+---
+I acknowledge my role as **Principal System Architect**.
+
+Here is the detailed specification for **Section 3.3: Blueprint Component Registry (BCR) Integration Layer**, structured with sub-sections `3.3.1`, `3.3.2`, and `3.3.3`.
+
+---
+
+### 3.3 Blueprint Component Registry (BCR) Integration Layer
+
+I acknowledge my role as **Principal System Architect**.
+
+Below is the complete, updated specification for **Section 3.3: Blueprint Component Registry (BCR) Integration Layer**. It has been rewritten to resolve the identified gaps—specifically incorporating authoritative System of Record (SoR) boundaries, cache trust tiering, bulk graph resolution APIs, version-specific lifecycle states, and two-phase idempotent publication Saga integration.
+
+---
+
+### 3.3 Blueprint Component Registry (BCR) Integration Layer
+
+#### 3.3.1 Registry Role & Digital Shelf Abstraction
+
+The Blueprint Component Registry (BCR) operates strictly as an authoritative, context-aware document repository—the "digital shelves" of the Meta-Compiler Platform. It exposes atomic storage, resolution, and version-tracking contracts without owning execution pipeline compilation, build state orchestration, or code synthesis logic.
+
+* **Authoritative System Boundary**: BCR is the authoritative system of record (SoR) for all specification manifests, component lifecycle states, and URN-to-CAS address mappings. Downstream database layers (such as PostgreSQL `specifications_registry`) operate purely as read projections or localized performance caches.
+
+
+* **Immutable Blueprint Catalog**: Stores base schemas, domain primitives, and industry templates as write-once source-of-truth records.
+
+
+* **Generated Artifact Vault**: Maintains authoritative index mappings between target artifact URNs and Content-Addressed Storage (CAS) digests.
+
+
+* **Decoupled Architecture**: `meta_builder` manages execution jobs and invokes BCR solely to fetch inherited spec hierarchies or register newly compiled output hashes.
+
+
+
+| Shelf Scope | Content Scope / Authority | Authoritative Owner | Cache / Read Projection |
+| --- | --- | --- | --- |
+| **Global Shelf** | Universal primitives (`UUID`, audit timestamps, base tenant types).
+
+ | BCR Engine
+
+ | PostgreSQL `specifications_registry`<br> |
+| **Industry Shelf** | Standard domain models (Telecom Subscriber, Healthcare Patient).
+
+ | BCR Engine
+
+ | PostgreSQL `specifications_registry`<br> |
+| **Provider Shelf** | Tenant-specific spec deltas, custom traits, and override layers.
+
+ | BCR Engine
+
+ | PostgreSQL `specifications_registry`<br> |
+| **Artifact Shelf** | Indexes generated Pydantic models, SQL schemas, and workflow AST digests.
+
+ | BCR Engine
+
+ | PostgreSQL `artifact_manifests` projection
+
+ |
+
+---
+
+#### 3.3.2 URN Resolution, Version-Level Lifecycle States & Resolution Policies
+
+BCR uses Uniform Resource Names (URNs) as globally unique identifiers across all specification tiers and generated outputs.
+
+* **URN Structure Protocol**:
+`urn:meta:bcr:{scope}:{owner}:{category}:{name}:v{version}`
+
+* *Blueprint Example*: `urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0`
+
+* *Generated Code Example*: `urn:meta:bcr:provider:comcast:artifacts:SubscriberPydanticModel:v1.0.0`
+
+
+
+* **Version-Specific Lifecycle State Machine**:
+Lifecycle states apply strictly to an **immutable versioned record**, never to a floating logical component name. Retiring `Subscriber:v1.0.0` has zero impact on `Subscriber:v1.1.0`.
+
+
+
+```
+       +---------+          Validate & Publish          +----------+
+       |  DRAFT  | -----------------------------------> |  ACTIVE  |
+       +---------+                                      +----------+
+            |                                                |
+            | Abandon                                        | Deprecate
+            v                                                v
+       +---------+                                      +------------+
+       | DELETED |                                      | DEPRECATED |
+       +---------+                                      +------------+
+                                                             |
+                                                             | Retire
+                                                             v
+                                                        +---------+
+                                                        | RETIRED |
+                                                        +---------+
+
+```
+
+* `DRAFT`: Unverified, mutable specification under authoring; accessible only to validation dry-runs (`/v1/build/validate`).
+
+
+* `ACTIVE`: Fully validated, immutable, production-ready record available for compilation. Content payload can never be mutated once published.
+
+
+* `DEPRECATED`: Operational but marked for decommissioning; generates boundary compilation warnings.
+
+
+* `RETIRED`: Read-only historical record; strictly rejected by `meta_builder` during new application synthesis.
+
+
+* **Transitive Dependency Resolution Policies**:
+During graph traversal, `meta_builder` evaluates root and transitive dependency states according to strict policy rules:
+
+
+
+| Root Component State | Transitive Dependency State | Resolution Result | Execution Outcome |
+| --- | --- | --- | --- |
+| `ACTIVE` | `ACTIVE` | **PASS** | Normal compilation pass.
+
+ |
+| `ACTIVE` | `DEPRECATED` | **WARN / CONFIGURABLE** | Passes with audit alert unless `--disallow-deprecated` flag is set.
+
+ |
+| `ACTIVE` | `RETIRED` | **REJECT** | Compiler halt (`422 Unprocessable Entity` / `MBR-007`).
+
+ |
+| `DEPRECATED` | `ACTIVE` / `DEPRECATED` | **REJECT (Default)** | Permitted only if `allow_deprecated=true` in build payload.
+
+ |
+| Any State | `DRAFT` | **REJECT** | Drafts cannot serve as dependencies for active builds.
+
+ |
+
+* **Cache Trust Tiers & Edge Case Mitigations**:
+
+| Edge Case Scenario | Failure Risk | Mitigation Mechanism | Cache / Partition Trust Protocol |
+| --- | --- | --- | --- |
+| **Write Collision** | Concurrent workers registering same version.
+
+ | Optimistic lock on version index. Same SHA-256 $\rightarrow$ Idempotent `200 OK`. Different SHA-256 $\rightarrow$ `409 Conflict`.
+
+ | Direct database/registry mutation check.
+
+ |
+| **Deep Tree Latency** | Sequential HTTP fetches ($N+1$ queries).
+
+ | Bulk Graph Resolution Endpoint (`POST /v1/registry/artifacts/resolve-batch`).
+
+ | Fetches closure subgraphs in $O(V + E)$ time.
+
+ |
+| **Network Partition** | Local cache out of sync during outage.
+
+ | Cache trust tiering and fail-closed security semantics.
+
+ | `ACTIVE_SIGNED`: Valid signature $\rightarrow$ Proceed.
+
+<br>
+
+<br>`STALE_INDICATED`: Expired TTL $\rightarrow$ Serve read-only with warning.
+
+<br>
+
+<br>`UNTRUSTED`: Fail-closed (`503`) for governance checks.
+
+ |
+
+---
+
+#### 3.3.3 Content-Addressed Storage (CAS), Bulk APIs & Saga Integration
+
+To guarantee reproducibility and immutability across builds, BCR combines URN resolution with SHA-256 Content-Addressed Storage (CAS).
+
+* **Bulk URN Graph Resolution Flow**:
+To prevent HTTP sequential latency bottlenecks, `meta_builder` requests complete dependency graphs in a single operation.
+
+
+
+```
+Client / Orchestrator           BCR Engine                     Logical CAS Service
+        │                            │                                  │
+        │── POST /resolve-batch ────>│                                  │
+        │   (Target URNs)            │── Bulk Closure Lookup ──┐        │
+        │                            │   (dag_lineage_edges)   │        │
+        │                            │<────────────────────────┘        │
+        │<── Graph AST + CAS Map ────│                                  │
+        │                            │                                  │
+        │── Verify SHA-256 Digests ────────────────────────────────────>│ (Fetch Content Blobs)
+
+```
+
+1. **Bulk Resolution Call**: Engine sends `POST /v1/registry/artifacts/resolve-batch` containing entrypoint URNs.
+
+
+2. **Graph Assembly**: BCR returns the full AST dependency graph along with resolved CAS SHA-256 addresses in a single payload.
+
+
+3. **In-Memory Integrity Check**: `meta_builder` fetches CAS blobs and verifies that $\text{SHA256}(\text{blob\_bytes}) == \text{expected\_cas\_sha256}$ before passing payloads to `meta_compiler`.
+
+
+
+* **Bulk Resolution Request Payload (`POST /v1/registry/artifacts/resolve-batch`)**:
+
+```json
+{
+  "target_urns": [
+    "urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0",
+    "urn:meta:bcr:global:primitives:Address:v1.2.0"
+  ],
+  "include_transitive_dependencies": true,
+  "allow_deprecated": false
+}
+
+```
+
+* **Integration with Idempotent Publication Saga**:
+The BCR registration interfaces (`reserve` and `commit`) serve as idempotent execution steps within the **Control Plane Publication Saga** rather than a blocking distributed transaction:
+
+
+
+1. **Reservation Endpoint (`POST /v1/registry/artifacts/reserve`)**: Reserves target artifact URNs and returns an ephemeral reservation token. If the URN is already registered with identical inputs, the call is idempotent.
+
+
+2. **Commit Endpoint (`POST /v1/registry/artifacts/commit`)**: Binds verified CAS SHA-256 hashes to reserved URNs, updating registry state from `RESERVED` to `ACTIVE`. If downstream orchestration drops after commit, background outbox workers reconcile the build state safely without deleting published immutable artifacts.
+
+
+
+* **Idempotent Artifact Commit Request Payload (`POST /v1/registry/artifacts/commit`)**:
+
+```json
+{
+  "reservation_token": "res_tok_9942a0fe-3b1a-41d9-8132-7c83492048f1",
+  "source_spec_urn": "urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0",
+  "build_job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "registered_artifacts": [
+    {
+      "artifact_urn": "urn:meta:bcr:provider:comcast:artifacts:SubscriberPydanticModel:v1.0.0",
+      "artifact_type": "PYDANTIC_DOMAIN_MODEL",
+      "cas_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/x-python",
+      "size_bytes": 4892
+    },
+    {
+      "artifact_urn": "urn:meta:bcr:provider:comcast:artifacts:SubscriberTableSchema:v1.0.0",
+      "artifact_type": "ASYNC_SQLALCHEMY_MODEL",
+      "cas_sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+      "content_type": "text/x-python",
+      "size_bytes": 3120
+    }
+  ]
+}
+
+```
+
+---
+
+### 3.4 Application Component Generator
+I have updated **Section 3.4 Application Component Generator** to reflect the review feedback, adapter delegation models, reproducible build constraints, and publication Saga integration. I have also appended the dedicated **Remediation Tracking Register Ledger** for Section 3.4 to track the specific fixes applied.
+
+---
+
+### 3.4 Application Component Generator
+
+The **Application Component Generator** acts as an orchestration facade and pipeline coordinator within `meta_builder`. Rather than executing low-level parsing, string formatting, or direct state mutation, the generator delegates execution mechanics to specialized foundation subsystems via dedicated adapters: `BrainAdapter`, `PolymorphAdapter`, `CompilerAdapter`, `VerificationAdapter`, `CASAdapter`, `BCRAdapter`, and `PersistenceAdapter`.
+
+The generator manages pipeline lifecycle state transitions, enforces strict entry and exit criteria, guarantees closed build input determinism, and coordinates artifact publication via the Control Plane Publication Saga.
+
+---
+
+#### 3.4.1 Decoupled Coordinator Architecture & Adapter Delegation
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                APPLICATION COMPONENT GENERATOR                                   │
+│                        (Pipeline Coordinator & Transaction Controller)                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+            │                     │                     │                     │
+            ▼                     ▼                     ▼                     ▼
+ ┌────────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+ │    BrainAdapter    │  │ PolymorphAdapter │  │ CompilerAdapter  │  │VerificationAdapt.│
+ │(meta_builder_brain)│  │ (meta_polymorph) │  │ (meta_compiler)  │  │(Ruff, Mypy, Temp)│
+ └────────────────────┘  └──────────────────┘  └──────────────────┘  └──────────────────┘
+            │                     │                     │                     │
+            ▼                     ▼                     ▼                     ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+ │                  PUBLICATION & PERSISTENCE ADAPTERS (Saga Outbox)                       │
+ │        [ CASAdapter ]       │       [ BCRAdapter ]       │     [ PersistenceAdapter ]   │
+ └─────────────────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+| Modular Adapter | Delegated Subsystem | Primary Responsibilities & Boundary Protocols |
+| --- | --- | --- |
+| **`BrainAdapter`** | `meta_builder_brain` | Ingests raw inputs, performs LLM domain synthesis, extracts secrets via OpenBao, and sanitizes outputs into `UNTRUSTED IR`.
+
+ |
+| **`PolymorphAdapter`** | `meta_polymorph` | Merges multi-tier manifest specs (`GLOBAL` $\rightarrow$ `INDUSTRY` $\rightarrow$ `CUSTOM`), executes DAG delta operations, and normalizes payloads into canonical `ManifestIR`.
+
+ |
+| **`CompilerAdapter`** | `meta_compiler` | Executes syntax validation (`JSONSchema`), NetworkX DAG cycle checks, type lowering, and target code generation.
+
+ |
+| **`VerificationAdapter`** | Generator Runtime | Executes target-specific verification profiles (formatting via `ruff`, static typing via `mypy`, and Temporal workflow AST validation).
+
+ |
+| **`CASAdapter`** | Logical CAS Service | Writes staged code binaries to staging paths, verifies SHA-256 digests, and promotes blobs to final CAS storage paths.
+
+ |
+| **`BCRAdapter`** | Blueprint Registry | Executes idempotent reservation (`POST /reserve`) and commit (`POST /commit`) calls as part of the publication Saga.
+
+ |
+| **`PersistenceAdapter`** | PostgreSQL DB Engine | Records job audit events, state machine updates, and DAG closure updates via AsyncPG within transactional boundaries.
+
+ |
+
+---
+
+#### 3.4.2 Deterministic Compilation & Build Reproducibility Manifest
+
+To satisfy the strict constraint that identical input specs yield byte-for-byte identical output code, all compiler inputs—including probabilistic LLM outputs—must be normalized and closed before code generation occurs.
+
+1. **LLM Synthesis Boundary**: LLM outputs from `BrainAdapter` are classified as **`UNTRUSTED IR`**. They are strictly prohibited from participating directly in code generation. They must undergo JSON Schema validation, OPA policy evaluation, and canonical structural normalization to produce an immutable **`ManifestIR`**.
+
+
+2. **Build Reproducibility Manifest**: The generator constructs a closed, canonical input manifest prior to code compilation. The SHA-256 hash of this manifest defines the authoritative `BuildInputDigest`.
+
+
+
+```json
+{
+  "source_spec_digest": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+  "resolved_dependency_digests": [
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  ],
+  "compiler_version": "1.4.0",
+  "polymorph_version": "2.1.0",
+  "brain_version": "0.9.5",
+  "python_version": "3.12.4",
+  "target_config_digest": "8f4c8996fb92427ae41e4649b934ca495991b7852b855e3b0c44298fc1c149a",
+  "policy_bundle_digest": "7c83492048f1res_tok_9942a0fe-3b1a-41d9-8132",
+  "verification_profile": {
+    "formatter": "ruff-v0.5.0",
+    "type_checker": "mypy-v1.10.0",
+    "strict_mode": true
+  },
+  "generation_mode": "deterministic"
+}
+
+```
+
+$$\text{BuildInputDigest} = \text{SHA256}(\text{CanonicalJSON}(\text{BuildReproducibilityManifest}))$$
+
+$$\text{Artifact} = F(\text{BuildInputDigest})$$
+
+---
+
+#### 3.4.3 Pipeline Lifecycle, Entry/Exit Gates & Publication Saga
+
+The generator manages pipeline state transitions using strict pre-condition and post-condition gates. Publication follows an idempotent Saga pattern rather than a distributed two-phase commit.
+
+```
+ [ INGESTING ] ──> [ GOVERNANCE_VALIDATING ] ──> [ MERGING ] ──> [ COMPILING ]
+                                                                       │
+ [ COMPLETED ] <── [ PERSISTING ] <── [ PUBLISHING ] <── [ VERIFYING ] ◄┘
+
+```
+
+| Pipeline Stage | Delegated Adapter | Pre-Condition (Entry Gate) | Post-Condition (Exit Gate) | Failure Enforcement & Recovery |
+| --- | --- | --- | --- | --- |
+| **`INGESTING`** | `BrainAdapter` | Valid request payload and active tenant identity context.
+
+ | Specs parsed into normalized `UNTRUSTED IR`.
+
+ | **Reject:** Return `422 Unprocessable Entity` (RFC-7807).
+
+ |
+| **`GOVERNANCE_VALIDATING`** | `BrainAdapter` / OPA | Hydrolyzed `UNTRUSTED IR` ready.
+
+ | OPA policies pass with zero violations; tenant isolation confirmed.
+
+ | **Halt:** Return `422` (Schema/Policy) or `403` (Forbidden).
+
+ |
+| **`MERGING`** | `PolymorphAdapter` | Verified OPA compliance; parent blueprint URNs resolved.
+
+ | Multi-tier spec deltas merged into canonical `ManifestIR`.
+
+ | **Abort:** Release transient memory; emit delta conflict error.
+
+ |
+| **`COMPILING`** | `CompilerAdapter` | Closed `ManifestIR` and `BuildInputDigest` produced.
+
+ | `SyntaxGuard`, NetworkX DAG check, and type lowering pass.
+
+ | **Circuit-Break:** Halt pipeline; emit AST/DAG cycle diagnostic log.
+
+ |
+| **`VERIFYING`** | `VerificationAdapter` | Raw unformatted code strings generated in-memory.
+
+ | Target **Verification Profile** passes (`ruff`, `mypy`, `TemporalWorkflowValidator`).
+
+ | **Reject:** Capture linter `stderr`; flag compilation fault.
+
+ |
+| **`PUBLISHING`** | `CASAdapter` / `BCRAdapter` | Formatted code strings and valid CAS digests verified.
+
+ | Code written to CAS staging; BCR reservation committed via Saga outbox.
+
+ | **Saga Retry:** Trigger asynchronous outbox reconciliation.
+
+ |
+| **`PERSISTING`** | `PersistenceAdapter` | Artifacts committed to BCR and CAS.
+
+ | PostgreSQL job status set to `COMPLETED`; DAG closure edges stored.
+
+ | **Reconcile:** Outbox worker retries DB transaction until published.
+
+ |
+
+##### Temporal Workflow Validation Contract
+
+When `temporal_workflow` is specified as a target, `VerificationAdapter` invokes a dedicated `TemporalWorkflowValidator`. This validator parses the generated Python AST and verifies compliance with Temporal determinism constraints:
+
+* **AST Separation**: Strictly segregates `@workflow.defn` (orchestration logic) from `@activity.defn` (side-effects).
+
+
+* **Deterministic Code Scanning**: Rejects AST nodes containing direct wall-clock calls (`datetime.now()`, `time.sleep()`), non-deterministic random generation (`random.uuid()`), network socket IO, or direct filesystem access within `@workflow.defn` methods.
+
+
+
+---
+
+#### 3.4.4 Target Emission Specifications & Code Artifacts
+
+Code targets are synthesized using target-specific emission rules that guarantee deterministic execution and proper timezone handling.
+
+```python
+# Generated by Application Component Generator v1.4.0
+# Source Spec URN: urn:meta:bcr:provider:comcast:bundles:SubscriberModule:v1.0.0
+# Build Input Digest: a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e
+# CAS SHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+from datetime import datetime, timezone
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import DateTime, String, func
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.ext.asyncio import AsyncAttrs
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# --- Target 1: Pydantic v2 Domain Model ---
+class SubscriberModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    subscriber_id: UUID = Field(..., description="Immutable unique subscriber ID")
+    service_tier: str = Field(..., description="Provider extended service tier")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Explicit UTC creation timestamp"
+    )
+
+# --- Target 2: Async SQLAlchemy 2.0 ORM Model ---
+class Base(AsyncAttrs, DeclarativeBase):
+    pass
+
+class SubscriberTable(Base):
+    __tablename__ = "subscribers"
+
+    subscriber_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True
+    )
+    service_tier: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
+```
+
+---
+
+
+
+## 3.5 Build Orchestration, Transaction Semantics & Recovery
+Here is the updated **Section 3.5: Build Orchestration, Transaction Semantics & Recovery**, revised as Principal System Architect to integrate the review feedback, enforce strict transactional outbox semantics, implement robust two-lock fencing protocols, and resolve operational execution gaps.
+
+Following the updated section, you will find the **Section 3.5 Remediation Tracking Register Ledger** detailing every review item fixed within this revision.
+
+---
+
+## 3.5 Build Orchestration, Transaction Semantics & Recovery
+
+This section establishes the Control and Orchestration Plane governing build job execution, transactional artifact publication, concurrency fencing, cooperative cancellation, and recovery semantics. It designates `meta_builder` as the authoritative controller of execution state while guaranteeing zero split-brain anomalies, no orphaned CAS assets, and deterministic recovery across underlying persistence, registry, and storage subsystems.
+
+---
+
+### 3.5.1 Request Idempotency & Durable Delivery Contract
+
+#### 1. Transactional Idempotency Ledger
+
+To prevent duplicate execution jobs during network retries, gateway client disconnects, or upstream timeouts, the API boundary enforces strict transactional idempotency using an authoritative relational ledger (`build_idempotency_keys`) bound directly to the transactional outbox.
+
+```sql
+CREATE TABLE build_idempotency_keys (
+    tenant_id UUID NOT NULL,
+    idempotency_key VARCHAR(255) NOT NULL,
+    request_sha256 CHAR(64) NOT NULL,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, idempotency_key)
+);
+CREATE INDEX idx_idempotency_expires ON build_idempotency_keys(expires_at);
+
+```
+
+**Atomic Ingestion Execution Sequence:**
+When a build submission (`POST /v1/build/submit`) arrives with an `Idempotency-Key` header, the database executes an atomic single-transaction sequence:
+
+```
+BEGIN TRANSACTION;
+  1. INSERT INTO build_idempotency_keys (tenant_id, idempotency_key, request_sha256, job_id, expires_at)
+     VALUES (:tenant_id, :idempotency_key, :request_sha256, :job_id, NOW() + INTERVAL '24 hours')
+     ON CONFLICT (tenant_id, idempotency_key) DO NOTHING;
+
+  2. IF NOT INSERTED (Conflict Detected):
+        SELECT request_sha256, job_id FROM build_idempotency_keys
+        WHERE tenant_id = :tenant_id AND idempotency_key = :idempotency_key;
+
+        IF existing.request_sha256 == incoming.request_sha256 THEN
+           ABORT TRANSACTION;
+           RETURN Existing job_id (HTTP 200 OK / 202 Accepted); -- Idempotent Replay
+        ELSE
+           ABORT TRANSACTION;
+           RETURN HTTP 409 Conflict (Payload mismatch for active idempotency key);
+        END IF;
+
+  3. INSERT INTO build_job_audit (job_id, tenant_id, status, current_stage, ...);
+  4. INSERT INTO build_queue_outbox (job_id, tenant_id, payload, enqueued_at);
+COMMIT;
+
+```
+
+#### 2. Durable Delivery & Outbox Polling Contract
+
+The message queue acts purely as an asynchronous delivery substrate. State authority resides strictly in the `build_job_audit` persistence layer.
+
+* **Transactional Outbox Worker**: An outbox process polls `build_queue_outbox` within the database transaction boundary, pushing dispatch messages to the durable queue (e.g., RabbitMQ, AWS SQS) and purging outbox entries upon publisher confirmation.
+
+
+* **Message Envelope & Trace Context**: Queue envelopes carry mandatory telemetry context (`trace_id`, `span_id`) for distributed tracing (Item #41) alongside execution parameters:
+
+
+
+```json
+{
+  "message_id": "msg_77a9b0e1-4c2d-4819-81a2",
+  "job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "tenant_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "attempt_number": 1,
+  "enqueued_at": "2026-08-30T00:15:00Z",
+  "visibility_timeout_sec": 300,
+  "trace_context": {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7"
+  }
+}
+
+```
+
+---
+
+### 3.5.2 State Machine, Dual-Lock Fencing & Transition Matrix
+
+#### 1. Canonical 14-State Engine & Orthogonal Sub-Flags
+
+To eliminate state fragmentation (Item #48), execution progresses strictly through a unified 14-state machine. Pipeline operations are distinct from status conditions: status tracks macro-lifecycle, while orthogonal sub-state flags track non-blocking operational conditions.
+
+* **Canonical States**: `SUBMITTED` $\rightarrow$ `QUEUED` $\rightarrow$ `INGESTING` $\rightarrow$ `GOVERNANCE_VALIDATING` $\rightarrow$ `MERGING` $\rightarrow$ `COMPILING` $\rightarrow$ `VERIFYING` $\rightarrow$ `HASHING` $\rightarrow$ `PUBLISHING` $\rightarrow$ `PERSISTING` $\rightarrow$ `COMPLETED`.
+
+
+* **Terminal Fault States**: `FAILED`, `REJECTED`, `CANCELLED`.
+
+
+* **Orthogonal Sub-State Flags**: `cancel_requested` (boolean), `retry_wait` (boolean), `reconciling` (boolean).
+
+
+
+#### 2. Dual-Lock Fencing Protocol (`lease_generation` + `version_id`)
+
+To prevent "zombie workers" (workers delayed by GC pauses, network partitions, or cgroup throttling) from corrupting active builds, every state mutation requires a dual-lock fencing query:
+
+1. **Worker Monotonic Lease (`lease_generation`)**: Incremented sequentially every time a worker claims or extends a job lease.
+
+
+2. **Optimistic Entity Version (`version_id`)**: Incremented on every row update to prevent concurrent mutation races.
+
+
+
+```sql
+UPDATE build_job_audit
+SET status = :new_status,
+    current_stage = :new_stage,
+    progress_percentage = :new_progress,
+    version_id = version_id + 1,
+    lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '300 seconds'
+WHERE job_id = :job_id
+  AND tenant_id = :tenant_id
+  AND status = :expected_current_status
+  AND version_id = :expected_version_id
+  AND lease_generation = :assigned_lease_generation
+  AND (lease_expires_at > CURRENT_TIMESTAMP OR status = 'QUEUED');
+
+```
+
+* **Fence Breach Protocol**: If `ROWCOUNT == 0`, the worker has lost its fence lease. The worker process must immediately abort execution, discard local in-memory ASTs, release local disk staging buffers (`/cas/staging/*`), and refrain from issuing downstream BCR or DB writes.
+
+
+
+#### 3. Formal State Transition Matrix
+
+| Current State | Permitted Next States | Trigger / Operational Condition | Mutation & Governance Guard |
+| --- | --- | --- | --- |
+| **`SUBMITTED`** | `QUEUED`, `REJECTED` | API payload ingestion & outbox enqueue. | Outbox DB Transaction |
+| **`QUEUED`** | `INGESTING`, `CANCELLED` | Worker claims message; acquires initial lease (`lease_generation + 1`). | Fencing Lock (`lease_generation`) |
+| **`INGESTING`** | `GOVERNANCE_VALIDATING`, `FAILED`, `CANCELLED` | Input spec parsed into normalized `UNTRUSTED IR`. | Dual-Lock (`lease_generation`, `version_id`) |
+| **`GOVERNANCE_VALIDATING`** | `MERGING`, `FAILED`, `REJECTED`, `CANCELLED` | OPA policy & tenant isolation check complete. | Phase A/B/C Gate Pass |
+| **`MERGING`** | `COMPILING`, `FAILED`, `CANCELLED` | Delta manifests merged into canonical `ManifestIR`. | Immutability Matrix Pass |
+| **`COMPILING`** | `VERIFYING`, `FAILED`, `CANCELLED` | Code generation & NetworkX DAG cycle check succeed. | Acyclic DAG Verification ($O(V+E)$) |
+| **`VERIFYING`** | `HASHING`, `FAILED`, `CANCELLED` | Linter (`ruff`), typing (`mypy`), & Temporal checks pass. | VerificationProfile Compliance |
+| **`HASHING`** | `PUBLISHING`, `FAILED` | Closed `BuildReproducibilityManifest` hashed (`BuildInputDigest`). | Pure Deterministic Hash Compute |
+| **`PUBLISHING`** | `PERSISTING`, `FAILED` | Blobs staged & committed via publication Saga outbox. | Atomic Publication Manifest Gate |
+| **`PERSISTING`** | `COMPLETED`, `FAILED` | PostgreSQL projections & closure edges committed. | Finalizing DB Transaction |
+| **`RECONCILING`** *(Sub-State)* | `COMPLETED`, `FAILED` | Background worker resolves uncommitted BCR/CAS bindings. | Recovery Worker Fencing Lock |
+| **`COMPLETED`** *(Terminal)* | *None* | Execution successful. Immutable state. | DB Read-Only Enforcement |
+| **`FAILED`** *(Terminal)* | *None* | Fatal execution or verification error encountered. | DB Read-Only Enforcement |
+| **`REJECTED`** *(Terminal)* | *None* | Pre-execution validation, schema, or policy breach. | DB Read-Only Enforcement |
+| **`CANCELLED`** *(Terminal)* | *None* | Cooperative cancellation finalized by worker. | DB Read-Only Enforcement |
+
+---
+
+### 3.5.3 Idempotent Artifact Publication Saga & Non-Rollback Semantics
+
+To prevent partial publication hazards where multi-artifact builds leave orphaned files or inconsistent schemas (Item #47), publication executes as an **Idempotent Publication Saga** using the **Build Artifact Manifest** as the single atomic unit of publication.
+
+```
+           WORKER / COMPILER                 CAS STORAGE SERVICE               BCR REGISTRY ENGINE
+                  │                                  │                                  │
+  1. Write Local Staging Files ────────────────────> │ Staging Buffer                   │
+     (/cas/staging/{job_id}/*.tmp)                   │ (/cas/staging/...)               │
+                  │                                  │                                  │
+  2. Compute SHA-256 & Generate Manifest             │                                  │
+                  │                                  │                                  │
+  3. Reserve BCR Artifact URNs ────────────────────────────────────────────────────────> │ POST /v1/registry/artifacts/reserve
+                  │                                                                     │ (Returns Reservation Token)
+  4. Promote CAS Blobs ────────────────────────────> │ Promote to Final Path            │
+                  │                                  │ (/cas/sha256/xx/yy/digest.bin)    │
+  5. Commit BCR Artifact Bundle ──────────────────────────────────────────────────────> │ POST /v1/registry/artifacts/commit
+                  │                                                                     │ (Idempotent CAS-to-URN Bind)
+  6. Finalize DB Transaction ──┐                     │                                  │
+     (Set COMPLETED in DB)     │                     │                                  │
+                               v                     │                                  │
+
+```
+
+#### Non-Rollback Governance & Forward Reconciliation
+
+Because published CAS binaries and active BCR URN mappings are **strictly immutable**, failures during steps 4, 5, or 6 **do not roll back** or delete already-published CAS blobs or registered BCR entries. Rolling back immutable assets destroys audit lineage. Instead, the system applies forward compensation and asynchronous outbox reconciliation:
+
+| Failure Point | Operational Impact | Compensation & Reconciliation Strategy |
+| --- | --- | --- |
+| **Failure during CAS Promotion (Step 4)** | Staging files exist; CAS promotion incomplete. | Worker deletes local temporary files in `/cas/staging/`. Job transitions to `FAILED` with RFC-7807 detail.
+
+ |
+| **Failure during BCR Commit (Step 5)** | Blobs promoted to CAS; BCR registry unbound. | Background Outbox Recovery Worker polls uncommitted reservations, re-issues `POST /v1/registry/artifacts/commit` using `BuildInputDigest`. Call is idempotent; duplicate writes yield `200 OK`.
+
+ |
+| **Failure during DB Finalization (Step 6)** | CAS promoted & BCR committed; DB status stale. | Recovery Worker checks BCR for active URN matching `job_id`. Upon verification, updates `build_job_audit` to `COMPLETED` (Forward Reconciliation).
+
+ |
+
+---
+
+### 3.5.4 Cooperative Cancellation, Timeout Taxonomy & Retry Matrix
+
+#### 1. Cooperative Cancellation Contract
+
+Hard process termination (`SIGKILL`) during build compilation runs the risk of leaving orphaned staging buffers or corrupted local caches. The platform enforces cooperative cancellation:
+
+1. **Cancellation Trigger**: A client invokes `POST /v1/build/status/{job_id}/cancel`.
+2. **Flag Mutation**: The API Gateway sets `sub_state_flags.cancel_requested = true` in `build_job_audit`.
+3. **Worker Checkpoint Evaluation**: The worker thread checks the `cancel_requested` flag at stage entry/exit gates (`INGESTING`, `MERGING`, `COMPILING`, `VERIFYING`).
+4. **Safe Offboarding**: If `cancel_requested == true`, the worker halts AST compilation, cleans up `/cas/staging/{job_id}/` temporary disk buffers, emits a `BUILD_CANCELLED` audit event, and updates status to `CANCELLED`.
+5. **Point-of-No-Return Boundary**: Once a build enters `PUBLISHING`, cancellation requests are deferred until publication finishes to preserve registry atomicity.
+
+#### 2. Comprehensive Timeout Taxonomy (Item #39)
+
+| Timeout Metric | Target Scope | Default Limit | Action on Expiry |
+| --- | --- | --- | --- |
+| **API Request Gateway Timeout** | Inbound REST/gRPC connection | $10\text{ seconds}$ | Abort HTTP request; return `504 Gateway Timeout`. |
+| **Queue Message Visibility Timeout** | Message ack deadline in queue | $300\text{ seconds}$ | Queue re-surfaces message for alternate worker pick-up. |
+| **Worker Lease Duration (`lease_expires_at`)** | Active database execution lease | $300\text{ seconds}$ | Lease expires; background recovery worker reclaims job. |
+| **Worker Heartbeat Ping** | DB lease renewal interval | $30\text{ seconds}$ | Worker background loop extends lease by +300s. |
+| **Maximum Build Job SLA** | Total job end-to-end processing | $900\text{ seconds}$ | Worker sets `cancel_requested=true`; aborts as `FAILED`. |
+| **Sub-Process Stage SLA** | Single tool pass (`mypy` / `ruff`) | $180\text{ seconds}$ | Terminate isolated child sub-process; flag stage fault. |
+| **BCR Registry API Timeout** | gRPC/HTTP call to BCR | $5\text{ seconds}$ | Circuit-breaker retry; fail-closed if exhausted. |
+| **CAS Disk I/O Timeout** | Local/Network blob write | $10\text{ seconds}$ | Abort write stream; purge local staging buffer. |
+| **OpenBao Secret Renewal SLA** | Dynamic credential lease renewal | $60\text{ seconds}$ | Re-issue AppRole authentication; halt worker if denied. |
+| **OPA Evaluation Socket Timeout** | Sidecar policy engine socket | $200\text{ ms}$ | Fail-closed (`503 Service Unavailable` with `Retry-After: 15`). |
+
+#### 3. Error Classification & Full-Jitter Retry Strategy (Item #40)
+
+Exceptions encountered during orchestration are categorized into deterministic (non-retryable) faults and transient (retryable) infrastructure faults:
+
+```python
+import random
+import logging
+
+logger = logging.getLogger("meta_builder.orchestrator")
+
+# Error Classification Taxonomy
+DETERMINISTIC_ERRORS = (
+    SyntaxError,
+    TypeError,
+    ValueError,
+    ImmutabilityViolationError,  # MBR-004
+    DAGTopologicalCycleError,   # MBR-005
+    GovernancePolicyDeniedError # MBR-003 / 403
+)
+
+TRANSIENT_ERRORS = (
+    DatabaseConnectionTimeout,
+    BCRRegistryUnavailableError, # 503
+    CASStorageIOException,
+    OPASidecarTimeoutException  # 503
+)
+
+def calculate_full_jitter_backoff(attempt: int, base_sec: float = 1.0, max_sec: float = 60.0) -> float:
+    """Calculates exponential backoff with full jitter to prevent thundering herds."""
+    temp = min(max_sec, base_sec * (2 ** attempt))
+    return random.uniform(0, temp)
+
+def handle_execution_exception(job_id: str, attempt: int, max_attempts: int, exc: Exception):
+    if isinstance(exc, DETERMINISTIC_ERRORS):
+        logger.error(f"Deterministic fault encountered for job {job_id}: {exc}. Terminating build immediately.")
+        transition_job_status(job_id, new_status="FAILED", retry=False)
+    elif isinstance(exc, TRANSIENT_ERRORS) and attempt < max_attempts:
+        backoff_delay = calculate_full_jitter_backoff(attempt)
+        logger.warning(f"Transient fault for job {job_id} (Attempt {attempt}/{max_attempts}): {exc}. Retrying in {backoff_delay:.2f}s.")
+        schedule_re_enqueue(job_id, delay_sec=backoff_delay)
+    else:
+        logger.critical(f"Exhausted retries or unhandled exception for job {job_id}: {exc}.")
+        transition_job_status(job_id, new_status="FAILED", retry=False)
+
+```
+
+---
+
+
+```
+
+Below is the detailed specification for **Section 4: Internal Storage & Persistence Plane Architecture**, establishing the relational schema layouts, transactional lineage tracking, and Content-Addressed Storage (CAS) blob model required for multi-tenant specification management and immutable artifact persistence.
+
+---
+
+
+
+### 4. Internal Storage & Persistence Plane Architecture
+
+**Section 4: Internal Storage & Persistence Plane Architecture** has been updated to incorporate the feedback from the co-architect review.
+
+Below is the complete, updated architectural specification for **Section 4**, followed by the dedicated **Section 4 Remediation Tracking Register Ledger** documenting all review items resolved in this revision.
+
+---
+
+### 4. Internal Storage & Persistence Plane Architecture
+
+The **Persistence Plane** provides state management, specification versioning, execution auditing, and compiled artifact storage across `meta_builder`. It explicitly separates **mutable operational metadata** (jobs, lineage graphs, evaluation traces) from **immutable content assets** (raw specifications, compiled ASTs, generated source code).
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   PERSISTENCE PLANE ARCHITECTURE                                        │
+│                                                                                                         │
+│ ┌────────────────────────────────────────────────────────┐  ┌─────────────────────────────────────────┐ │
+│ │ RELATIONAL METADATA LAYER (PostgreSQL 16+)             │  │ CONTENT-ADDRESSED STORAGE (CAS LOGICAL) │ │
+│ │  ├── specifications_registry (BCR Read Cache)          │  │  ├── Physical CAS Object / Blob Store   │ │
+│ │  ├── dag_lineage_closure (Precomputed Closures)        │  │  │   └── /cas/sha256/xx/yy/{hash}.bin       │ │
+│ │  ├── build_job_audit (Fenced Workload States)          │  │  └── artifact_manifests (Metadata Index)│ │
+│ │  └── build_job_events (Cryptographic Event Chains)     │  │      ├── build_input_sha256             │ │
+│ │                                                        │  │      ├── policy_bundle_sha256           │ │
+│ │                                                        │  │      └── kms_signature                  │ │
+│ └────────────────────────────────────────────────────────┘  └─────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+#### 4.1 Metadata & Spec Persistence Layout
+
+The engine utilizes PostgreSQL 16+ as its central transactional metadata engine, accessed asynchronously via `AsyncSession` and SQLAlchemy 2.0. All operational metadata tables enforce multi-tenant isolation via mandatory `tenant_id` columns and PostgreSQL Row-Level Security (RLS) policies. Specification payloads are stored as loss-free, structured JSONB documents, indexed via GIN (Generalized Inverted Index) to allow high-speed query evaluation across sub-keys without full-table scans.
+
+##### 4.1.1 Relational Schema Definitions & Migration Protocol
+
+The storage layer enforces relational constraints, Foreign Keys, optimistic locking (`version_id`), and tenant isolation. The `specifications_registry` table operates strictly as a read-optimized projection and local cache of the authoritative Blueprint Component Registry (BCR).
+
+```sql
+-- Enable Extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Core Specification Registry (Projection/Cache of BCR State)
+CREATE TYPE spec_lifecycle_state AS ENUM ('DRAFT', 'ACTIVE', 'DEPRECATED', 'RETIRED');
+CREATE TYPE spec_scope_tier AS ENUM ('GLOBAL', 'INDUSTRY', 'PROVIDER');
+CREATE TYPE immutability_tier AS ENUM ('FINAL', 'EXTENDABLE', 'OVERRIDABLE');
+
+CREATE TABLE specifications_registry (
+    urn VARCHAR(255) PRIMARY KEY,
+    namespace VARCHAR(128) NOT NULL,
+    entity_name VARCHAR(128) NOT NULL,
+    version VARCHAR(32) NOT NULL,
+    scope spec_scope_tier NOT NULL,
+    state spec_lifecycle_state NOT NULL DEFAULT 'DRAFT',
+    immutability immutability_tier NOT NULL DEFAULT 'OVERRIDABLE',
+    parent_urn VARCHAR(255) REFERENCES specifications_registry(urn),
+    raw_manifest_ast JSONB NOT NULL,
+    canonical_sha256 CHAR(64) NOT NULL,
+    version_id INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_specs_lookup ON specifications_registry (namespace, entity_name, version);
+CREATE INDEX idx_specs_parent ON specifications_registry (parent_urn);
+CREATE INDEX idx_specs_ast_gin ON specifications_registry USING gin (raw_manifest_ast);
+
+-- Precomputed Transitive DAG Closure Table
+CREATE TABLE dag_lineage_closure (
+    ancestor_urn VARCHAR(255) NOT NULL REFERENCES specifications_registry(urn) ON DELETE CASCADE,
+    descendant_urn VARCHAR(255) NOT NULL REFERENCES specifications_registry(urn) ON DELETE CASCADE,
+    depth INT NOT NULL,
+    edge_type VARCHAR(32) NOT NULL DEFAULT 'INHERIT',
+    PRIMARY KEY (ancestor_urn, descendant_urn)
+);
+
+CREATE INDEX idx_closure_ancestor ON dag_lineage_closure (ancestor_urn);
+CREATE INDEX idx_closure_descendant ON dag_lineage_closure (descendant_urn);
+
+-- Tenant-Isolated Build Execution & Job Audit Store
+CREATE TABLE build_job_audit (
+    job_id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    target_urn VARCHAR(255) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    current_stage VARCHAR(64) NOT NULL,
+    progress_percentage INT NOT NULL DEFAULT 0,
+    version_id INT NOT NULL DEFAULT 1,
+    lease_generation INT NOT NULL DEFAULT 0,
+    lease_expires_at TIMESTAMPTZ NULL,
+    rfc7807_error_payload JSONB NULL,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX idx_audit_tenant ON build_job_audit (tenant_id);
+
+-- Append-Only Cryptographically Chained Build Job Events Table (Replaces JSONB arrays)
+CREATE TABLE build_job_events (
+    event_id BIGSERIAL PRIMARY KEY,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL,
+    sequence_no BIGINT NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    stage VARCHAR(64),
+    severity VARCHAR(16) NOT NULL,
+    event_payload JSONB NOT NULL,
+    previous_event_hash CHAR(64),
+    event_hash CHAR(64) NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unq_job_event_seq UNIQUE (job_id, sequence_no)
+);
+
+CREATE INDEX idx_job_events_job ON build_job_events (job_id, sequence_no);
+
+-- Enable Row-Level Security on Tenant Operational Tables
+ALTER TABLE build_job_audit ENABLE ROW LEVEL SECURITY;
+ALTER TABLE build_job_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_audit ON build_job_audit
+    USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY tenant_isolation_events ON build_job_events
+    USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+```
+
+**Zero-Downtime Migration Protocol (Item #45):**
+Database schema evolutions strictly adhere to an **Expand $\rightarrow$ Migrate $\rightarrow$ Contract** deployment pattern:
+
+1. **Expand**: Add non-null defaultable columns, new tables, or new indexes without dropping or mutating active fields.
+2. **Migrate**: Deploy dual-writing application instances capable of writing to both legacy and expanded structures while reading back-compatible formats.
+3. **Contract**: Remove legacy columns and triggers only after all application workers have updated and verified the expanded schema state.
+
+##### 4.1.2 Cryptographic Event Chaining & External WORM Anchoring (Item #25)
+
+To guarantee immutable execution logs, `build_job_events` maintains a cryptographic hash chain. Each event entry computes its hash $H_n$ over its sequence index, payload, and the preceding event hash $H_{n-1}$:
+
+$$H_n = \text{SHA256}(H_{n-1} \parallel \text{SequenceNo} \parallel \text{EventType} \parallel \text{CanonicalJSON}(\text{EventPayload}))$$
+
+* **WORM Anchor Checkpoints**: To prevent database superuser tampering or retroactive log alteration, background persistence workers periodically generate signed checkpoint manifests ($H_N$). These checkpoints are written to an external Write-Once-Read-Many (WORM) storage bucket (e.g., AWS S3 Object Lock in Compliance Mode) and anchored with a KMS digital signature.
+
+##### 4.1.3 Closure Table Lineage Retrieval Complexity (Item #35)
+
+To eliminate performance degradation caused by recursive common table expression (CTE) graph queries during runtime compilation, ancestor/descendant lineage trees are maintained within `dag_lineage_closure`.
+
+* **Retrieval Complexity**: Fetching complete inherited blueprint subgraphs or component dependency trees executes as a single indexed lookup:
+
+$$\text{Time Complexity} = O(V + E)$$
+
+Where $V$ represents the number of ancestor nodes and $E$ represents the edge count within the closure subgraph, eliminating iterative round-trips to the database engine.
+
+---
+
+#### 4.2 Generated Code & Provenance Storage Model
+
+The generator produces immutable code assets (Pydantic models, Async SQLAlchemy ORM classes, Temporal Workflows). Artifact binaries are managed through an abstract **Content-Addressed Storage (CAS)** interface.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 CONTENT-ADDRESSED STORAGE (CAS) MODEL                                   │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Compiled Source File String (Python AST / DDL)                                                       │
+│                                │                                                                        │
+│                                ▼                                                                        │
+│ 2. Compute Content Hash: SHA256(RawBytes) ──> Digest: e3b0c44298fc1c149afbf4c8996fb92427...             │
+│                                │                                                                        │
+│                ┌───────────────┴───────────────────────────────┐                                        │
+│                ▼                                               ▼                                        │
+│ 3A. Metadata Layer (PostgreSQL)               3B. Logical CAS Service API                               │
+│     TABLE: artifact_manifests                     ├── put(digest, bytes)                                │
+│     ├── artifact_urn, tenant_id                   ├── get(digest)                                       │
+│     ├── cas_sha256 (FK to Blob)                   ├── exists(digest)                                    │
+│     ├── build_input_sha256                        ├── verify(digest)                                    │
+│     ├── policy_bundle_sha256                      └── delete_staging(token)                             │
+│     └── kms_signature                                                                               │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+##### 4.2.1 Provenance-Aware Artifact Manifest Schema (Items #33, #34, #37, #46, #47)
+
+The `artifact_manifests` table indexes compiled artifacts, binds them to exact compiler and runtime compatibility targets, captures full provenance hashes, and stores HSM/KMS digital signatures.
+
+```sql
+CREATE TYPE artifact_lifecycle_state AS ENUM ('STAGED', 'PUBLISHED', 'REVOKED');
+
+CREATE TABLE artifact_manifests (
+    artifact_urn VARCHAR(255) PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    source_spec_urn VARCHAR(255) NOT NULL REFERENCES specifications_registry(urn),
+    build_job_id UUID NOT NULL REFERENCES build_job_audit(job_id),
+    artifact_type VARCHAR(64) NOT NULL,
+    cas_sha256 CHAR(64) NOT NULL,
+    content_type VARCHAR(64) NOT NULL DEFAULT 'text/x-python',
+    size_bytes BIGINT NOT NULL,
+
+    -- Provenance & Reproducibility Hashes (Item #33)
+    build_input_sha256 CHAR(64) NOT NULL,
+    policy_bundle_sha256 CHAR(64) NOT NULL,
+
+    -- Cryptographic Signature (Item #37)
+    kms_key_id VARCHAR(255) NOT NULL,
+    kms_signature TEXT NOT NULL,
+
+    -- Compiler & Runtime Version Mappings (Item #46)
+    compiler_version VARCHAR(32) NOT NULL,
+    target_runtime_constraints JSONB NOT NULL,
+
+    -- Atomic Publication State (Item #47)
+    lifecycle_state artifact_lifecycle_state NOT NULL DEFAULT 'STAGED',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_artifact_cas ON artifact_manifests (cas_sha256);
+CREATE INDEX idx_artifact_job ON artifact_manifests (build_job_id);
+CREATE INDEX idx_artifact_tenant ON artifact_manifests (tenant_id);
+
+ALTER TABLE artifact_manifests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_artifacts ON artifact_manifests
+    USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+```
+
+##### 4.2.2 Transactional URN Registration & Collision Semantics (Item #34)
+
+When registering generated artifacts against `artifact_manifests`, the engine executes an atomic registration transaction:
+
+```
+BEGIN TRANSACTION;
+  1. INSERT INTO artifact_manifests (artifact_urn, tenant_id, cas_sha256, build_input_sha256, ...)
+     VALUES (:urn, :tenant_id, :cas_sha256, :build_input_sha256, ...)
+     ON CONFLICT (artifact_urn) DO NOTHING;
+
+  2. IF NOT INSERTED (Conflict Detected):
+        SELECT cas_sha256 FROM artifact_manifests WHERE artifact_urn = :urn;
+
+        IF existing.cas_sha256 == incoming.cas_sha256 THEN
+           ABORT TRANSACTION;
+           RETURN HTTP 200 OK; -- Idempotent success (identical artifact content digest)
+        ELSE
+           ABORT TRANSACTION;
+           RETURN HTTP 409 Conflict; -- Content collision for identical URN version
+        END IF;
+COMMIT;
+
+```
+
+##### 4.2.3 CAS Physical Layout & Staging Protocols
+
+* **Storage Path Scheme**: `/cas/sha256/{digest[0:2]}/{digest[2:4]}/{full_digest}.bin`
+* **Write Atomicity**: Blobs are written to a staging directory (`/cas/staging/{job_id}/{token}.tmp`). Upon validation, the physical CAS service invokes `put(digest, bytes)`, performing atomic link/rename operations into the physical storage tree.
+
+
+* **Cleanup Strategy**: If a build cancels or encounters a validation failure prior to the `PUBLISHING` stage, `delete_staging(token)` purges all temporary files from `/cas/staging/` to prevent orphaned disk allocations.
+
+
+
+---
+
+### 5. Non-Functional Requirements (NFRs) & Operational Safeguards
+
+I have updated **Section 5: Non-Functional Requirements (NFRs) & Operational Safeguards** to incorporate all identified co-reviewer feedback, aligning performance targets, security governance, and operational resilience with the rest of the updated system specification. Below is the updated Section 5, followed by the tracked remediation items resolved within this section.
+
+---
+
+### 5. Non-Functional Requirements (NFRs) & Operational Safeguards
+
+#### 5.1 Performance, Latency SLAs & Workload Admission Controls
+
+The engine enforces strict operational performance bounds to guarantee fast feedback loops for interactive API clients while protecting backend worker clusters from memory inflation. Total build execution latency $T_{\text{total}}$ across all pipeline stages is bounded by:
+
+$$T_{\text{total}} = T_{\text{ingest}} + T_{\text{governance}} + T_{\text{merge}} + T_{\text{compile}} + T_{\text{verify}} + T_{\text{persist}}$$
+
+##### 5.1.1 Latency SLAs & System Throughput Targets
+
+Latency targets are explicitly partitioned between synchronous API gateway operations and asynchronous worker queue processing.
+
+| Operational Stage | SLA Type | Target Metric | P95 SLA | P99 SLA | Performance & Bound Specifications |
+| --- | --- | --- | --- | --- | --- |
+| **API Ingestion & Ack** | Synchronous | Ingestion, JWT & Idempotency Check | $< 15\text{ ms}$ | $< 30\text{ ms}$ | 2,500 req/sec per API worker node
+
+ |
+| **Dry-Run Validation** | Synchronous | `POST /v1/build/validate` (Phases A/B/C) | $< 80\text{ ms}$ | $< 150\text{ ms}$ | Evaluates up to 50 field rules concurrently
+
+ |
+| **Lineage Materialization** | Asynchronous | Closure Lookup (`dag_lineage_edges`) | $< 15\text{ ms}$ | $< 35\text{ ms}$ | $O(V + E)$ materialization post-indexed lookup
+
+ |
+| **AST Spec Merging** | Asynchronous | `meta_polymorph` Delta Resolution | $< 45\text{ ms}$ | $< 100\text{ ms}$ | Multi-tier manifest inheritance up to 10 levels
+
+ |
+| **Deterministic Compiler** | Asynchronous | `meta_compiler` AST Emission | $< 120\text{ ms}$ | $< 250\text{ ms}$ | Synthesizes up to 50 AST entity nodes/sec
+
+ |
+| **Verification Gate** | Asynchronous | `ruff` & `mypy` Static Checking Pass | $< 300\text{ ms}$ | $< 600\text{ ms}$ | Governed by target `VerificationProfile`<br> |
+| **CAS Blob Persistence** | Asynchronous | Disk Write & SHA-256 Digest | $< 20\text{ ms}$ | $< 50\text{ ms}$ | Sharded atomic storage for blobs $< 10\text{ MB}$<br> |
+| **Deterministic Pipeline** | Asynchronous | `POST /v1/build/submit` (Standard) | $< 1200\text{ ms}$ | $< 2500\text{ ms}$ | Closed `BuildReproducibilityManifest` path
+
+ |
+| **LLM Synthesis Pipeline** | Asynchronous | `POST /v1/build/submit` (With LLM) | $< 4000\text{ ms}$ | $< 8000\text{ ms}$ | Bounded by upstream inference model latency
+
+ |
+
+##### 5.1.2 Workload Admission Controls & Resource Allocation
+
+* **Tenant Quotas & Pre-Allocation Bounds**: Workload complexity is verified during Phase A static checks before allocating build execution workers. Requests exceeding tenant admission boundaries (`max_ast_nodes > 10,000` or `max_payload_bytes > 10MB`) are rejected immediately with an HTTP 422 payload.
+
+
+* **Isolated Process Pools**: CPU-intensive verification tools (`mypy`, target compilers) execute in separate sub-process worker pools scaled to $N_{\text{cpu}} - 1$ cores. This isolates heavy static analysis from the non-blocking AsyncIO HTTP loop.
+
+
+* **Database Connection Pooling**: PostgreSQL connections are managed via SQLAlchemy `AsyncEngine` pools configured to 20 connections per worker node with 10 max overflow connections and a 30-second checkout limit.
+
+
+
+##### 5.1.3 System SLOs & OpenTelemetry Observability Frame
+
+* **Quantitative Quantitative SLOs**:
+* **API Acceptance Availability**: $99.95\%$ uptime across all REST and gRPC gateway interfaces.
+
+
+* **Build Completion Success Rate**: $\ge 99.9\%$ successful completions for valid, policy-compliant input payloads.
+
+
+* **Queue Age Processing SLA**: P99 queue latency $< 500\text{ ms}$ under baseline load ($< 80\%$ worker capacity).
+
+
+* **CAS Integrity**: $0\%$ unrecoverable SHA-256 checksum failures across all read and write operations.
+
+
+
+
+* **OpenTelemetry Distributed Tracing Context**:
+All requests propagate trace context across network and process boundaries using standard OpenTelemetry headers (`traceparent`, `tracestate`). The canonical metadata context—including `trace_id`, `span_id`, `tenant_id`, `job_id`, and `build_input_sha256`—is automatically attached to API logs, worker queue envelopes, OPA evaluation payloads, and AsyncPG audit events.
+
+
+
+---
+
+#### 5.2 Security, Multi-Tenant Governance & Audit Integrity
+
+##### 5.2.1 Authentication & Authoritative RBAC/ABAC
+
+* **Authentication Protocol & Key Rotation**: Inbound API requests and CLI invocations supply OAuth2/OIDC JWT Bearer tokens signed via RS256. Tokens must contain valid claims (`iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `tenant_id`). Signature keys are dynamically retrieved and validated using an automated JWKS (JSON Web Key Set) discovery loop with cached TTLs and graceful key rotation fallback.
+
+
+* **Decoupled Policy Engine**: Open Policy Agent (OPA) sidecars evaluate RBAC/ABAC Rego rules before job dispatch. Policy rules enforce strict namespace isolation (`urn:meta:bcr:provider:{tenant_id}:*`) to block unauthorized cross-tenant specification access.
+
+
+
+##### 5.2.2 Multi-Tenant Isolation & Untrusted LLM Boundaries
+
+* **Database Row-Level Security (RLS)**: PostgreSQL tables (`build_job_audit`, `build_job_events`, `artifact_manifests`, `build_idempotency_keys`) enforce mandatory `tenant_id` columns paired with RLS policies (`USING (tenant_id = current_setting('app.tenant_id')::uuid)`).
+
+
+* **Untrusted LLM IR Boundary**: Synthesized specs from `meta_builder_brain` are ingested as `UNTRUSTED IR`. LLM outputs cannot directly drive code generation; they must pass schema validation, OPA governance, and canonical normalization into an immutable `ManifestIR`.
+
+
+* **Configurable Verification Profiles**: Verification strictness and typing modes are specified via `VerificationProfile` configurations embedded within the `BuildReproducibilityManifest`, establishing target-specific quality gates without breaking compilation reproducibility.
+
+
+
+##### 5.2.3 Cryptographic Audit Streams & Secrets Management
+
+* **Append-Only Event Chaining & WORM Anchoring**: Audit events are written to an append-only `build_job_events` store. Events are cryptographically chained using SHA-256 ($H_n = \text{SHA256}(H_{n-1} \parallel \text{EventPayload}_n)$) to prevent retroactive tampering. Event chain heads ($H_N$) are anchored periodically via signed checkpoint manifests written to external WORM storage (e.g., AWS S3 Object Lock).
+
+
+* **Dynamic OpenBao Secrets Leasing**: Storage keys, KMS signing handles, and database credentials are dynamically leased from OpenBao using short-lived AppRole tokens. Background renewal loops manage token leases; if renewal fails or a token is revoked, workers initiate non-blocking execution drain and halt new processing loops. All log streams and RFC-7807 payloads pass through automated string filters to scrub sensitive credentials prior to persistence.
+
+
+
+---
+
+#### 5.3 Operational Failure Modes & Mitigation Matrix
+
+The system operates under a fail-closed, zero-silent-failure design policy across all planes.
+
+| Failure Scenario | System Detection Mechanism | Automated Mitigation & Recovery Strategy | Operational State |
+| --- | --- | --- | --- |
+| **DB Connection Pool Exhaustion** | Pool checkout time exceeds $30\text{ s}$, raising `TimeoutError`.
+
+ | Sheds load via HTTP `503 Service Unavailable` with `Retry-After: 15`; read operations fall back to Redis caches.
+
+ | Circuit Breaker Active
+
+ |
+| **Recursive AST Lineage Cycle** | NetworkX `simple_cycles()` detects directed graph cycle.
+
+ | Aborts merge pipeline prior to stack overflow; returns RFC-7807 error payload detailing circular path (max depth $N_{\text{max}} = 32$).
+
+ | Validation Rejection (`422`)
+
+ |
+| **CAS Blob Storage Corruption** | SHA-256 mismatch on read OR physical volume capacity $> 90\%$.
+
+ | Writes stage to `/cas/staging` first; failures route writes to secondary object store; corrupted reads flag node repair.
+
+ | Storage Failover (`500`)
+
+ |
+| **OPA Sidecar Timeout / Crash** | Connection timeout ($> 200\text{ ms}$) on local sidecar socket.
+
+ | Enforces fail-closed governance; rejects mutation operations with `503 Service Unavailable`; read ops fallback to locally signed policy bundles.
+
+ | Governance Lockdown (`503`)
+
+ |
+| **Stale Worker / GC Pause Breach** | Dual-lock database fencing check fails (`lease_generation` mismatch).
+
+ | SQL update affects 0 rows; stale worker detects fencing breach, immediately halts processing, and discards staging files.
+
+ | Execution Fenced (Aborted)
+
+ |
+| **Concurrent URN Write Collision** | Unique constraint breach on `specifications_registry(urn)`.
+
+ | Matching payload SHA-256 yields idempotent `200 OK`; differing payload returns `409 Conflict`.
+
+ | Reconciliation Pass
+
+ |
+| **Worker RAM Exhaustion** | Process RAM exceeds cgroup threshold during `mypy` pass.
+
+ | OS issues `SIGKILL` to isolated child process pool; HTTP service remains online and transitions job status to `FAILED`.
+
+ | Sub-Process Isolation
+
+ |
+
+---
+
+# 6. Control-Plane Data Contracts & State-Transition Protocols
+
+The Control Plane acts as the authoritative orchestration boundary within the Meta-Compiler Platform, managing request ingestion, workload identity context, state machine updates, concurrency fencing, and durable outbox events. It translates user-facing API operations into deterministic pipeline execution loops across compilation and registry subsystems.
+
+---
+
+## 6.1 Workload Identity Context & Authorization Claims Schema
+
+All inbound requests passing through the Experience Plane to the Control Plane must carry an authenticated identity context. This context encapsulates identity claims, tenancy scopes, and security boundaries.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkloadIdentityContext",
+  "type": "OBJECT",
+  "required": [
+    "trace_id",
+    "tenant_id",
+    "principal_id",
+    "auth_token",
+    "requested_scope_urn"
+  ],
+  "properties": {
+    "trace_id": {
+      "type": "STRING",
+      "format": "uuid",
+      "description": "Unique W3C trace ID for end-to-end telemetry propagation."
+    },
+    "tenant_id": {
+      "type": "STRING",
+      "format": "uuid",
+      "description": "Authoritative UUID of the tenant issuing the request."
+    },
+    "principal_id": {
+      "type": "STRING",
+      "description": "Identifier of the invoking user, service account, or CI/CD runner."
+    },
+    "workload_profile": {
+      "type": "STRING",
+      "enum": ["DIRECT_IN_PROCESS", "REMOTE_GATEWAY"],
+      "default": "REMOTE_GATEWAY",
+      "description": "Execution transport context."
+    },
+    "auth_token": {
+      "type": "STRING",
+      "description": "OIDC RS256 Bearer JWT or dynamic workload identity token."
+    },
+    "requested_scope_urn": {
+      "type": "STRING",
+      "pattern": "^urn:meta:bcr:[a-z0-9_]+:[a-z0-9_]+:[a-z0-9_]+:[A-Za-z0-9_]+:v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Target BCR URN boundary scope for authorization check."
+    }
+  },
+  "additionalProperties": false
+}
+
+```
+
+---
+
+## 6.2 Formal State Machine Transition Protocol
+
+Execution lifecycle transitions strictly adhere to a **14-State Canonical Pipeline Engine**. Transitions must be atomically committed to `build_job_audit` using a **Dual-Lock Fencing Protocol** (`lease_generation` + `version_id`) to prevent stale workers from mutating build state.
+
+```
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       SUBMITTED                        │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Outbox Enqueue
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                         QUEUED                         │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Acquire Worker Lease
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       INGESTING                        │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Parse Spec / Untrusted IR
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                 GOVERNANCE_VALIDATING                  │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Phase A/B/C Gates Pass
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                        MERGING                         │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Synthesize ManifestIR
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       COMPILING                        │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Build AST / DAG Check Pass
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       VERIFYING                        │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Lint / Type Check Pass
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                        HASHING                         │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Compute BuildInputDigest
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       PUBLISHING                       │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Promote CAS / Commit BCR
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       PERSISTING                       │
+                 └───────────────────────────┬────────────────────────────┘
+                                             │ Commit DB Projections
+                                             ▼
+                 ┌────────────────────────────────────────────────────────┐
+                 │                       COMPLETED                        │
+                 └────────────────────────────────────────────────────────┘
+
+ [TERMINAL FAULT STATES]: REJECTED (Validation Gate Failure), FAILED (Runtime Fault), CANCELLED (Cooperative Halt)
+
+```
+
+### State Mutation Guard Statement
+
+For any transition from $S_{\text{current}}$ to $S_{\text{next}}$, workers execute the following single atomic update:
+
+```sql
+UPDATE build_job_audit
+SET status = :next_status,
+    current_stage = :next_stage,
+    progress_percentage = :progress,
+    version_id = version_id + 1,
+    lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '300 seconds'
+WHERE job_id = :job_id
+  AND tenant_id = :tenant_id
+  AND status = :current_status
+  AND version_id = :expected_version_id
+  AND lease_generation = :assigned_lease_generation
+  AND (lease_expires_at > CURRENT_TIMESTAMP OR status = 'QUEUED');
+
+```
+
+---
+
+## 6.3 Transactional Outbox & Event Envelope Schema
+
+To decouple the relational persistence layer from distributed downstream event consumers without incurring two-phase commit overhead, state changes emit a durable outbox entry within the primary database transaction.
+
+### Transactional Outbox Schema
+
+```sql
+CREATE TABLE build_queue_outbox (
+    outbox_id BIGSERIAL PRIMARY KEY,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL,
+    topic VARCHAR(128) NOT NULL DEFAULT 'meta.builder.jobs',
+    payload JSONB NOT NULL,
+    trace_id VARCHAR(36) NOT NULL,
+    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX idx_outbox_unprocessed ON build_queue_outbox (enqueued_at) WHERE processed_at IS NULL;
+
+```
+
+### Canonical Event Envelope Format
+
+Every event dispatched by the Outbox Worker to the message bus uses a standardized envelope:
+
+```json
+{
+  "event_id": "evt_883a91bf-21d4-4a5e-b103-51829e0992a1",
+  "job_id": "job_bld_9482f01a-8c3b-4e92-b811-1a93e84711d9",
+  "tenant_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "event_type": "BUILD_STAGE_TRANSITIONED",
+  "sequence_no": 4,
+  "timestamp": "2026-08-30T00:20:15Z",
+  "trace_context": {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "00f067aa0ba902b7"
+  },
+  "payload": {
+    "previous_stage": "GOVERNANCE_VALIDATING",
+    "current_stage": "MERGING",
+    "status": "PROCESSING",
+    "lease_generation": 2,
+    "build_input_sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+  }
+}
+
+```
+
+---
+
+## 6.4 Publication Saga & Forward Reconciliation Protocol
+
+When a build reaches the target artifact publication step, distributed atomic guarantees are achieved using an **Idempotent Artifact Publication Saga** rather than distributed locking.
+
+1. **Step 1 (Staging Writes)**: Formatted code binaries are staged to localized worker paths (`/cas/staging/{job_id}/*.tmp`).
+
+
+2. **Step 2 (BCR URN Reservation)**: Worker issues `POST /v1/registry/artifacts/reserve` to BCR, receiving a temporary reservation token.
+
+
+3. **Step 3 (CAS Blob Promotion)**: Blobs are promoted to physical storage path locations (`/cas/sha256/xx/yy/{hash}.bin`).
+
+
+4. **Step 4 (BCR Idempotent Commit)**: Worker calls `POST /v1/registry/artifacts/commit`, linking the CAS SHA-256 digests to the reserved URNs.
+
+
+5. **Step 5 (DB Finalization)**: Worker updates `build_job_audit` to `COMPLETED` and commits localized database projections.
+
+
+
+### Forward Reconciliation Matrix
+
+Immutable CAS blobs and committed BCR registry entries are never deleted or rolled back if downstream database steps fail. If step 5 encounters a database crash or connection loss, a background **Recovery Worker** performs non-rollback forward reconciliation:
+
+| Point of Disruption | Observed System State | Recovery Worker Reconciliation Sequence |
+| --- | --- | --- |
+| **Post-Step 3 Fail** | Blobs in CAS; BCR uncommitted; DB in `PUBLISHING`. | Worker re-executes Step 4 (`POST /commit`). Call is idempotent; yields `200 OK` and proceeds to Step 5.
+
+ |
+| **Post-Step 4 Fail** | Blobs in CAS; BCR committed `ACTIVE`; DB in `PUBLISHING`. | Worker queries BCR for URN matching `job_id`. Confirms active status and updates DB directly to `COMPLETED`.
+
+ |
+| **Stale Worker Lock** | Worker dead; `lease_expires_at` passed. | Recovery worker increments `lease_generation = lease_generation + 1`, reclaims job context, and resumes execution from last verified stage checkpoint.
+
+ |

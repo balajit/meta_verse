@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import logging
+from typing import Any, ClassVar, Final
+
+import httpx
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from meta_telemetry import get_tracer, trace_span
+
+from {{ package_name }}.exceptions import (
+    PolicyAccessDeniedError,
+    PolicyEvaluationError,
+)
+from {{ package_name }}.extensions.config import settings
+
+
+logger: Final[logging.Logger] = logging.getLogger(
+    "{{ package_name }}.extensions.policy"
+)
+
+tracer = get_tracer(
+    "{{ package_name }}.extensions.policy"
+)
+
+
+class PolicyGuard:
+    """Application-scoped OPA authorization client singleton."""
+
+    _instance: ClassVar[PolicyGuard | None] = None
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        opa_url: str,
+    ) -> None:
+        self._client = client
+        self._opa_url = opa_url.rstrip("/")
+
+        logger.debug(
+            "PolicyGuard initialized with OPA URL: %s",
+            self._opa_url,
+        )
+
+    @classmethod
+    def initialize(
+        cls,
+        client: httpx.AsyncClient,
+        opa_url: str,
+    ) -> PolicyGuard:
+        """Initialize and register the global PolicyGuard instance."""
+
+        if cls._instance is not None:
+            raise RuntimeError(
+                "PolicyGuard is already initialized."
+            )
+
+        cls._instance = cls(
+            client=client,
+            opa_url=opa_url,
+        )
+
+        logger.info(
+            "PolicyGuard global instance initialized."
+        )
+
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls) -> PolicyGuard:
+        """Retrieve the global PolicyGuard instance."""
+
+        if cls._instance is None:
+            raise RuntimeError(
+                "PolicyGuard is not initialized. "
+                "Ensure it is created during application lifespan."
+            )
+
+        return cls._instance
+
+    @classmethod
+    def teardown(cls) -> None:
+        """Reset the singleton instance (useful during app shutdown or tests)."""
+
+        cls._instance = None
+
+        logger.info(
+            "PolicyGuard global instance cleared."
+        )
+
+    @trace_span("policy.evaluate")
+    async def enforce(
+        self,
+        policy_path: str,
+        input_data: dict[str, Any],
+    ) -> None:
+        if not policy_path.strip():
+            raise PolicyEvaluationError(
+                message="Policy path cannot be empty.",
+                error_code="ERR_POLICY_PATH_INVALID",
+            )
+
+        if ".." in policy_path:
+            raise PolicyEvaluationError(
+                message="Invalid OPA policy path.",
+                error_code="ERR_POLICY_PATH_INVALID",
+            )
+
+        url = f"{self._opa_url}/v1/data/{policy_path}"
+
+        retrying = AsyncRetrying(
+            retry=retry_if_exception_type(
+                (
+                    httpx.TimeoutException,
+                    httpx.NetworkError,
+                )
+            ),
+            stop=stop_after_attempt(
+                settings.opa_max_retries + 1,
+            ),
+            wait=wait_exponential(
+                multiplier=0.25,
+                min=0.25,
+                max=2.0,
+            ),
+            reraise=True,
+        )
+
+        try:
+            response: httpx.Response | None = None
+
+            async for attempt in retrying:
+                attempt_number = (
+                    attempt.retry_state.attempt_number
+                )
+
+                logger.debug(
+                    "Requesting OPA policy '%s', attempt %d",
+                    policy_path,
+                    attempt_number,
+                )
+
+                with attempt:
+                    response = await self._client.post(
+                        url,
+                        json={"input": input_data},
+                        timeout=settings.opa_timeout_seconds,
+                    )
+
+            if response is None:
+                raise PolicyEvaluationError(
+                    message="OPA request did not produce a response.",
+                    error_code="ERR_POLICY_NO_RESPONSE",
+                )
+
+        except PolicyEvaluationError:
+            raise
+
+        except (
+            httpx.TimeoutException,
+            httpx.NetworkError,
+        ) as exc:
+            logger.exception(
+                "OPA authorization service unavailable for policy '%s'",
+                policy_path,
+            )
+
+            raise PolicyEvaluationError(
+                message="OPA authorization service unavailable.",
+                error_code="ERR_POLICY_PROVIDER_UNAVAILABLE",
+                details={
+                    "policy_path": policy_path,
+                },
+            ) from exc
+
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error while evaluating OPA policy '%s'",
+                policy_path,
+            )
+
+            raise PolicyEvaluationError(
+                message="Unexpected OPA policy evaluation failure.",
+                error_code="ERR_POLICY_EVALUATION_FAILED",
+                details={
+                    "policy_path": policy_path,
+                },
+            ) from exc
+
+        response_body = response.text[:2000]
+
+        if response.status_code >= 500:
+            raise PolicyEvaluationError(
+                message="OPA authorization service returned a server error.",
+                error_code="ERR_POLICY_PROVIDER_ERROR",
+                details={
+                    "policy_path": policy_path,
+                    "status_code": response.status_code,
+                    "response": response_body,
+                },
+            )
+
+        if response.status_code != 200:
+            raise PolicyEvaluationError(
+                message="OPA authorization request was rejected.",
+                error_code="ERR_POLICY_REQUEST_FAILED",
+                details={
+                    "policy_path": policy_path,
+                    "status_code": response.status_code,
+                    "response": response_body,
+                },
+            )
+
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise PolicyEvaluationError(
+                message="OPA returned invalid JSON.",
+                error_code="ERR_POLICY_INVALID_RESPONSE",
+            ) from exc
+
+        if not isinstance(result, dict):
+            raise PolicyEvaluationError(
+                message="OPA response has invalid structure.",
+                error_code="ERR_POLICY_INVALID_RESPONSE",
+            )
+
+        decision = result.get("result", {})
+
+        if not isinstance(decision, dict):
+            raise PolicyEvaluationError(
+                message="OPA decision has invalid structure.",
+                error_code="ERR_POLICY_INVALID_RESPONSE",
+            )
+
+        if not bool(decision.get("allow", False)):
+            raise PolicyAccessDeniedError(
+                message="Access denied by authorization policy.",
+                details={
+                    "policy_path": policy_path,
+                },
+            )
+
+
+def init_policy_guard(
+    client: httpx.AsyncClient,
+    opa_url: str,
+) -> PolicyGuard:
+    """Initialize PolicyGuard instance during application lifespan startup."""
+
+    return PolicyGuard.initialize(
+        client=client,
+        opa_url=opa_url,
+    )
+
+
+def get_policy_guard() -> PolicyGuard:
+    """Fetch the initialized singleton PolicyGuard instance."""
+
+    return PolicyGuard.get_instance()
+
+
+def create_policy_guard() -> PolicyGuard:
+    """Alias to retrieve the singleton PolicyGuard instance."""
+
+    return PolicyGuard.get_instance()
+
+
+def close_policy_guard() -> None:
+    """Clear the singleton instance during application lifespan shutdown."""
+
+    PolicyGuard.teardown()

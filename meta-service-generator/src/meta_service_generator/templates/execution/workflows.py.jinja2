@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import asyncio
+import graphlib
+import logging
+from collections.abc import Awaitable, Callable
+from typing import Any, Final
+
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from meta_telemetry import get_tracer, trace_span
+
+
+logger: Final[logging.Logger] = logging.getLogger(
+    "{{ package_name }}.execution.{{ workflow.name | snake_case }}"
+)
+
+tracer = get_tracer(
+    "{{ package_name }}.execution.{{ workflow.name | snake_case }}"
+)
+
+
+StepHandler = Callable[
+    [dict[str, Any], dict[str, Any]],
+    Awaitable[Any],
+]
+
+
+class {{ workflow.name | pascal_case }}WorkflowRunner:
+    """Generated asynchronous DAG workflow runner."""
+
+    def __init__(
+        self,
+        step_handlers: dict[str, StepHandler],
+    ) -> None:
+        self._handlers = dict(step_handlers)
+
+        logger.debug(
+            "Initialized {{ workflow.name | pascal_case }}WorkflowRunner "
+            "with %d step handlers",
+            len(self._handlers),
+        )
+
+    @trace_span("workflow.execute")
+    async def execute(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        logger.info(
+            "Starting {{ workflow.name | pascal_case }} workflow execution"
+        )
+
+        if not isinstance(payload, dict):
+            raise TypeError(
+                "Workflow payload must be a dict."
+            )
+
+        sorter: graphlib.TopologicalSorter[str] = (
+            graphlib.TopologicalSorter()
+        )
+
+{% for step in workflow.steps %}
+        sorter.add(
+            {{ step.name | python_literal }},
+{% for dependency in step.depends_on %}
+            {{ dependency | python_literal }},
+{% endfor %}
+        )
+{% endfor %}
+
+        sorter.prepare()
+
+        results: dict[str, Any] = {}
+
+        async def run() -> None:
+            while sorter.is_active():
+                ready = tuple(sorter.get_ready())
+
+                logger.debug(
+                    "Workflow {{ workflow.name | pascal_case }} "
+                    "ready steps: %s",
+                    ready,
+                )
+
+{% if workflow.execution_mode.value == "parallel" %}
+                async with asyncio.TaskGroup() as task_group:
+                    for step_name in ready:
+                        task_group.create_task(
+                            self._run_step(
+                                "{{ workflow.name }}",
+                                step_name,
+                                payload,
+                                results,
+                            )
+                        )
+{% else %}
+                for step_name in ready:
+                    await self._run_step(
+                        "{{ workflow.name }}",
+                        step_name,
+                        payload,
+                        results,
+                    )
+{% endif %}
+
+                for step_name in ready:
+                    sorter.done(step_name)
+
+        try:
+{% if workflow.timeout_seconds %}
+            await asyncio.wait_for(
+                run(),
+                timeout={{ workflow.timeout_seconds }},
+            )
+{% else %}
+            await run()
+{% endif %}
+        except Exception:
+            logger.exception(
+                "Workflow {{ workflow.name | pascal_case }} execution failed"
+            )
+            raise
+
+        logger.info(
+            "Completed {{ workflow.name | pascal_case }} workflow execution"
+        )
+
+        return dict(results)
+
+    @trace_span("workflow.run_step")
+    async def _run_step(
+        self,
+        workflow_name: str,
+        step_name: str,
+        payload: dict[str, Any],
+        results: dict[str, Any],
+    ) -> None:
+        logger.debug(
+            "Starting workflow step '%s' for workflow '%s'",
+            step_name,
+            workflow_name,
+        )
+
+        handler = self._handlers.get(step_name)
+
+        if handler is None:
+            logger.error(
+                "Handler missing for workflow '%s', step '%s'",
+                workflow_name,
+                step_name,
+            )
+
+            raise KeyError(
+                f"Handler missing for workflow step '{step_name}'."
+            )
+
+{% for step in workflow.steps %}
+        if step_name == {{ step.name | python_literal }}:
+            retry_policy = (
+                {{ step.retry_policy.max_retries }}
+            )
+
+            retrying = AsyncRetrying(
+                stop=stop_after_attempt(
+                    retry_policy + 1
+                ),
+                wait=wait_exponential(
+                    multiplier={{ step.retry_policy.multiplier }},
+                    min={{ step.retry_policy.min_seconds }},
+                    max={{ step.retry_policy.max_seconds }},
+                ),
+                retry=retry_if_exception_type(Exception),
+                reraise=True,
+            )
+
+            try:
+                async for attempt in retrying:
+                    attempt_number = (
+                        attempt.retry_state.attempt_number
+                    )
+
+                    logger.debug(
+                        "Executing workflow '%s' step '%s', "
+                        "attempt %d",
+                        workflow_name,
+                        step_name,
+                        attempt_number,
+                    )
+
+                    with attempt:
+{% if step.timeout_seconds %}
+                        step_result = await asyncio.wait_for(
+                            handler(payload, results),
+                            timeout={{ step.timeout_seconds }},
+                        )
+{% else %}
+                        step_result = await handler(
+                            payload,
+                            results,
+                        )
+{% endif %}
+
+                        results[step_name] = step_result
+
+                        logger.debug(
+                            "Completed workflow '%s' step '%s' "
+                            "successfully on attempt %d",
+                            workflow_name,
+                            step_name,
+                            attempt_number,
+                        )
+
+                        return
+
+            except Exception:
+                logger.exception(
+                    "Workflow '%s' step '%s' failed after retry policy "
+                    "was exhausted",
+                    workflow_name,
+                    step_name,
+                )
+                raise
+{% endfor %}
+
+        raise KeyError(
+            f"Unknown workflow step '{step_name}'."
+        )

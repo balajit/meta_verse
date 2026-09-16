@@ -1,0 +1,2 @@
+##Goal: Create a tool using meta_builder_brain which will take an input and generate the output
+Define the required environment for executing the tool which includes directory structure, env props etc.

@@ -1,0 +1,327 @@
+### Issue Remediation Tracking Log
+
+| Co-Architect Review Item | Remediation Summary & Architectural Impact | Section 2 Target |
+| --- | --- | --- |
+| **Issue #1: Plane Model Inconsistency** | Replaced conflicting 2-plane diagram and 5-plane prose with an explicit **Six-Plane Architecture** across all diagrams and descriptions. | Section 2.1 |
+| **Issue #2: Split-Brain & Authority Ambiguity** | Added a definitive **Data Authority Matrix** establishing BCR as authority for specifications, CAS for blobs, and PostgreSQL for job execution state. Explicitly designated `specifications_registry` as a read projection/cache. | Section 2.2 |
+| **Issue #23 & Security Decoupling** | Decoupled the security boundary flow into explicit sequential stages: Authentication $\rightarrow$ Identity Extraction $\rightarrow$ OPA Authorization $\rightarrow$ OpenBao Secret Acquisition $\rightarrow$ Business Operation. | Section 2.3 & 2.4 |
+| **Issue #31: Direct Mode Security Boundary** | Formalized that CLI/Local Direct Mode bypasses network transport protocols only, retaining strict identity, authorization, and governance policy execution. | Section 2.4 |
+
+### Issue Remediation Tracker (Section 3.1 Updates)
+
+| Issue ID | Co-Architect Review Gap | Remediation Strategy in Section 3.1 |
+| --- | --- | --- |
+| **Gap 3** | Idempotency Persistence Model Underspecified | Added `build_idempotency_keys` transactional database schema, atomic submission write semantics (`BEGIN` $\rightarrow$ key insert $\rightarrow$ job insert $\rightarrow$ queue event $\rightarrow$ `COMMIT`), and exact `409 Conflict` vs `200/202` payload-hash matching behavior. |
+| **Gap 31** | Direct Mode Security Boundary Ambiguity | Formally defined that CLI Direct Mode bypasses network transport layers (gRPC/HTTP) **only**. In-process execution strictly enforces identity context instantiation, tenant scoping, and local OPA policy evaluation. |
+| **Gap 32** | Remote CLI Authentication & Token Profiles | Expanded headers to support distinct authentication profiles: Interactive User OAuth2 JWTs, Service-to-Service identities, and short-lived CI/CD Workload Identities (`X-Workload-Identity`). |
+| **Gap 36** | Missing Ingestion & Payload Size Bounds | Added explicit payload controls (`max_payload_bytes`, `max_depth`, `max_nodes`) to submission and validation parameters to prevent unbounded graph memory expansion at ingestion. |
+
+---
+### 3.2 Hybrid Governance & Validation Engine
+
+**Gap Remediation Tracking Register**
+
+| Gap ID | Review Gap Title | Architectural Fix Applied in Section 3.2 |
+| --- | --- | --- |
+| **Gap 29** | Immutability Granularity | Defined explicit operation-level permissions (`READ`, `ADD`, `REPLACE`, `DELETE`, `DISABLE`) across `FINAL`, `EXTENDABLE`, and `OVERRIDABLE` tiers. |
+| **Gap 30** | Monolithic Validation Pipeline | Decomposed validation into a 3-Phase Pipeline (Phase A: Pure Static, Phase B: Resolution & Topology, Phase C: Policy & Governance) to decouple offline checks from remote dependencies. |
+| **Gap 16** | Untrusted LLM Synthesis Bounds | Added mandatory Phase A schema validation, canonical normalization, and structural sanitization for untrusted LLM-generated IRs before compiler ingestion. |
+| **Gap 22** | Pre-Allocation Admission Controls | Incorporated spec payload size and AST node limit verification directly into Phase A to reject unviable builds before allocating compilation resources. |
+| **Gap 27** | Governance Status Code Semantics | Standardized RFC-7807 error payloads, explicitly separating policy/validation denials (`422 Unprocessable` / `403 Forbidden`) from governance infrastructure failures (`503 Service Unavailable`). |
+| **Gap 31** | Direct Mode Execution Parity | Explicitly required Direct Mode to execute identical Phase A–C validation gates in-process to prevent security boundary drift. |
+
+### 3.3 Blueprint Component Registry (BCR) Integration Layer
+### Section 3.3 Remediation Tracker (Gap Analysis Resolution)
+
+The following architectural gaps identified in the review have been remediated in **Section 3.3**:
+
+* **Gap 2: Split-Brain Source-of-Truth Ambiguity**: Explicitly established the BCR Engine as the authoritative system of record for blueprint manifests, version lifecycle states, and URN-to-CAS mappings. Formally designated PostgreSQL `specifications_registry` as a read projection/cache layer.
+
+
+* **Gap 7: Distributed Protocol Contradiction**: Replaced "Two-Phase Commit" terminology with "Idempotent Artifact Publication Saga Integration". Re-framed `reserve()` and `commit()` as idempotent registry endpoints invoked during Saga execution.
+
+
+* **Gap 13: Unclear Lifecycle State Granularity**: Bound lifecycle states (`DRAFT`, `ACTIVE`, `DEPRECATED`, `RETIRED`) strictly to immutable versioned records (`Subscriber:v1.0.0`) rather than floating logical component names.
+
+
+* **Gap 14: Ambiguous `DEPRECATED` Resolution Policy**: Defined exact matrix rules for resolving `DEPRECATED` transitive dependencies across build targets.
+
+
+* **Gap 26: Cache Divergence & Invalidation Hazards**: Defined explicit cache trust tiers (`ACTIVE_SIGNED`, `STALE_INDICATED`, `UNTRUSTED`) and enforced fail-closed governance semantics during network partitions.
+
+### 3.4 Application Component Generator
+
+As Principal System Architect, I have updated **Section 3.4 Application Component Generator** to address the critical gaps identified in the Co-Architect review. The updated specification establishes an explicit coordinator adapter model, isolates untrusted LLM outputs, enforces strict build reproducibility manifests, introduces specialized validation pipelines (including Temporal workflow determinism), and aligns publication with the Idempotent Artifact Publication Saga.
+
+---
+
+### Issue Resolution Tracking Matrix
+
+| Gap ID | Review Issue Description | Architectural Remediation in Section 3.4 |
+| --- | --- | --- |
+| **Gap 7** | Two-Phase Commit vs. Saga terminology conflict | Replaced 2PC terminology with **Idempotent Artifact Publication Saga** (`reserve` $\rightarrow$ `commit` API via outbox). |
+| **Gap 15** | Non-deterministic build inputs & artifacts | Introduced a closed **Build Reproducibility Manifest** generating a canonical `BuildInputDigest` such that $\text{Artifact} = F(\text{BuildInputDigest})$. |
+| **Gap 16** | Probabilistic LLM outputs leaking into compiler | Standardized LLM outputs as `UNTRUSTED IR`, requiring schema/policy sanitization into an immutable, canonical `ManifestIR`. |
+| **Gap 17** | Universal `mypy --strict` gate too rigid across target runtimes | Replaced with target-specific **Verification Profiles** embedded directly into the build reproducibility manifest. |
+| **Gap 18** | Deprecated/non-deterministic `datetime.utcnow()` defaults | Enforced explicit, timezone-aware UTC semantics (`timezone.utc`) and database-side default constraints. |
+| **Gap 19** | Missing determinism safeguards for Temporal workflows | Added **`TemporalWorkflowValidator`** stage separating Workflow ASTs from Activity ASTs and blocking direct side-effects. |
+| **Gap 20** | Monolithic generator violating single-responsibility | Re-architected `ApplicationComponentGenerator` into a pure coordinator facade delegating to modular adapters. |
+
+---
+## 3.5 Build Orchestration, Transaction Semantics & Recovery
+
+**Gap Remediation Tracking Register**
+
+The following architectural updates resolve the distributed state, locking, publication, and recovery gaps identified in the architecture review:
+
+| Gap ID | Review Gap Summary | Applied Architectural Remediation |
+| --- | --- | --- |
+| **Gap 3** | Idempotency underspecified | Formalized DB-backed idempotency table (`build_idempotency_keys`) and atomic submission sequence. |
+| **Gap 4** | Queue contract undefined | Defined queue payload contract as a pure delivery substrate decoupled from database authority. |
+| **Gap 5** | State machine transition rules missing | Defined an explicit state transition matrix with strict database-level optimistic locking rules. |
+| **Gap 6** | Worker lease conflated with state lock | Separated worker execution ownership (`lease_generation` fencing token) from state mutation locking (`version_id`). |
+| **Gap 7** | 2PC vs. Saga contradiction | Standardized pipeline on an Idempotent Artifact Publication Saga (`STAGED` $\rightarrow$ `RESERVED` $\rightarrow$ `PUBLISHED`). |
+| **Gap 8** | Undefined Saga compensation | Mapped compensatable vs. non-compensatable steps; immutable artifacts are reconciled, never deleted. |
+| **Gap 38** | Abrupt process termination on cancel | Replaced hard process killing with cooperative `CANCEL_REQUESTED` tokens and checkpointing. |
+| **Gap 39** | Missing timeout taxonomy | Formalized an explicit 10-tier timeout matrix covering API, leases, builds, and downstream dependencies. |
+| **Gap 40** | Unclassified retry semantics | Constructed an authoritative error taxonomy distinguishing retryable transient faults from hard terminal failures. |
+
+---
+
+### 4. Internal Storage & Persistence Plane Architecture
+
+### Architectural Issue Tracking & Remediation Log
+
+The following architectural gaps identified in the co-reviewer feedback report have been resolved and incorporated directly into **Section 4: Internal Storage & Persistence Plane Architecture**:
+
+* **Audit Event Normalization (Review Item 10)**: Replaced the mutable `execution_logs JSONB` array column in `build_job_audit` with a fully normalized, append-only `build_job_events` table utilizing cryptographic hash chaining.
+
+
+* **DAG Closure Retrieval Complexity (Review Item 12)**: Corrected the theoretical graph retrieval complexity claim from $O(1)$ to indexed closure lookup followed by result-size-proportional graph materialization, $O(V + E)$.
+
+
+* **Registry Authority Clarification (Review Item 2)**: Explicitly designated `specifications_registry` as a read-optimized projection and local cache of the authoritative Blueprint Component Registry (BCR), preventing split-brain state anomalies.
+
+
+* **Tenant Ownership & Row-Level Security (Review Item 11)**: Added mandatory `tenant_id UUID NOT NULL` columns across all operational tables (`build_job_audit`, `artifact_manifests`, `build_job_events`, etc.) and established PostgreSQL Row-Level Security (RLS) enforcement policies.
+
+
+* **CAS Abstract Interface & Storage Semantics (Review Item 9)**: Defined CAS abstractly through a formalized interface (`put`, `get`, `exists`, `verify`, `delete_staging`) and clarified that CAS authority resides in the logical CAS service rather than tying persistence strictly to a single physical disk architecture.
+
+
+
+---
+### 5. Non-Functional Requirements (NFRs) & Operational Safeguards
+
+### Architecture Review Gap Remediation Ledger
+
+| Action Item | Co-Architect Review Gap & Risk Analysis | Section 5 Remediation & Hardening Strategy | Source Citation |
+| --- | --- | --- | --- |
+| **Gap #10** | Audit log structure inconsistency between text and schema. | Replaced mutable `execution_logs` JSONB arrays with an append-only `build_job_events` cryptographically chained table anchored to WORM stores. |  |
+| **Gap #11** | Missing tenant ownership across operational tables. | Enforced mandatory `tenant_id` foreign keys and PostgreSQL Row-Level Security (RLS) policies across all persistence schemas. |  |
+| **Gap #12** | Inaccurate $O(1)$ complexity claim for graph retrieval. | Corrected DAG closure retrieval complexity to indexed closure lookup followed by $O(V + E)$ subgraph materialization. |  |
+| **Gap #15 & #16** | Probabilistic LLM output risks & generation determinism. | Isolated `meta_builder_brain` outputs as `UNTRUSTED IR`, requiring schema validation and canonical normalization into `ManifestIR` before compilation. |  |
+| **Gap #17** | Universal `mypy --strict` gate too rigid for all outputs. | Introduced target-specific `VerificationProfile` specs (formatter, type checker mode, error budget) within the `BuildReproducibilityManifest`. |  |
+| **Gap #21** | Single $< 600\text{ ms}$ SLA unrealistically covers LLM + build tasks. | Decoupled latency metrics into synchronous API Acceptance SLAs ($P95 < 15\text{ ms}$) versus asynchronous pipeline execution SLAs. |  |
+| **Resource Bounds** | Rigid 512 MB per-worker memory cap risk. | Replaced static process memory limits with tenant-level admission controls (`max_ast_nodes`, `max_payload_bytes`) evaluated prior to worker queueing. |  |
+
+---
+
+### Remediation Tracking Register Ledger (Section 3.2 Updates)
+
+Below is the remediation ledger tracking the specific gaps fixed as part of this update:
+
+| Co-Architect Item | Identified Gap / Feedback | Architectural Resolution in Section 3.2 | Status |
+| --- | --- | --- | --- |
+| **Item #27** | Incorrect OPA failure HTTP code mapping (`500` vs policy denial / engine unavailable).
+
+ | Updated Section 3.2.3 to explicitly map policy denials to `403 Forbidden` and OPA engine timeouts/unreachability to `503 Service Unavailable` with fail-closed semantics.
+
+ | **RESOLVED** |
+| **Item #28** | Static 512 MB worker RAM limit conflicts with admission model.
+
+ | Replaced static process limits in Phase A static checks with pre-allocation workload admission bounds (`max_ast_nodes`, `max_payload_bytes`).
+
+ | **RESOLVED** |
+| **Item #29** | Field-level immutability lacks operation-level precision.
+
+ | Expanded Section 3.2.1 with a 5-operation Permission Matrix (`READ`, `ADD`, `REPLACE`, `DELETE`, `DISABLE`) across `FINAL`, `EXTENDABLE`, and `OVERRIDABLE` tiers.
+
+ | **RESOLVED** |
+| **Item #30** | Monolithic single-pass spec validation pipeline. | Restructured Section 3.2.2 into a decoupled 3-Phase pipeline (Phase A: Static, Phase B: Resolution/Topology, Phase C: Policy/Governance). | **RESOLVED** |
+| **Item #36** | Unbounded graph expansions during transitive resolution. | Embedded static bounds enforcement (`max_depth: 32`, `max_nodes: 10000`, `max_payload_bytes: 10MB`) directly inside Phase A and Phase B validation gates. | **RESOLVED** |
+| **Item #43** | Non-standardized error strings in RFC-7807 responses. | Updated Section 3.2.3 and the RFC-7807 payload schema to require machine-readable error codes (`MBR-001` through `MBR-010`) alongside human detail strings. | **RESOLVED** |
+```
+
+### Remediation Tracking Register Ledger (Issues Addressed in Section 3.3)
+
+| Co-Architect Item | Issue / Gap Description | Fix Summary & Resolution | Target Section Number |
+| --- | --- | --- | --- |
+| **Item #26** | PostgreSQL pool exhaustion fallback to Redis risks stale authorization.
+
+ | Defined explicit cache trust tiers (`ACTIVE_SIGNED`, `STALE_INDICATED`, `UNTRUSTED`) and enforced fail-closed checks on auth/mutations when DB/BCR are unreachable.
+
+ | **Section 3.3.2** |
+| **Item #34** | URN primary keys lack explicit write collision semantics.
+
+ | Implemented transactional registration: matching CAS digest yields idempotent `200 OK`, while conflicting CAS digest yields `409 Conflict`.
+
+ | **Section 3.3.2** |
+| **Item #35** | Split-brain risk across BCR, PostgreSQL closure, and NetworkX graphs.
+
+ | Designated BCR as authoritative dependency system of record; PostgreSQL provides closure acceleration; NetworkX operates strictly in-memory.
+
+ | **Section 3.3.1 & 3.3.3** |
+| **Item #36** | Unbounded graph expansions during transitive resolution.
+
+ | Added bulk closure graph APIs (`POST /resolve-batch`) with bound enforcement (`max_depth: 32`, `max_nodes: 10000`).
+
+ | **Section 3.3.3** |
+| **Item #47** | Partial publication hazards across multi-artifact builds.
+
+ | Bound publication to a 2-phase reserve/commit Saga with outbox reconciliation to guarantee atomic artifact set publication.
+
+ | **Section 3.3.3** |
+
+ ### Remediation Tracking Ledger: Section 3.4 Application Component Generator
+
+| Review Gap ID | Description of Gap | Fix Applied in Section 3.4 | Target Section |
+| --- | --- | --- | --- |
+| **GAP-3.4-01** | Generator conflated AST parsing, LLM synthesis, and code generation within a single monolithic facade.
+
+ | Introduced a modular adapter architecture (`BrainAdapter`, `PolymorphAdapter`, `CompilerAdapter`, `VerificationAdapter`, `CASAdapter`, `BCRAdapter`, `PersistenceAdapter`) to isolate execution responsibilities.
+
+ | **Section 3.4.1** |
+| **GAP-3.4-02** | Non-deterministic code emission risk from direct LLM output participation in compilation.
+
+ | Isolated LLM output to `UNTRUSTED IR`, requiring schema validation and OPA evaluation before normalization into a closed `ManifestIR`.
+
+ | **Section 3.4.2** |
+| **GAP-3.4-03** | Lack of build input closure leads to non-reproducible artifact binaries.
+
+ | Established the `BuildReproducibilityManifest` and canonical SHA-256 `BuildInputDigest` calculation to guarantee deterministic outputs.
+
+ | **Section 3.4.2** |
+| **GAP-3.4-04** | Undefined stage gates and failure semantics during multi-stage code generation.
+
+ | Standardized pipeline state transitions (`INGESTING` $\rightarrow$ ... $\rightarrow$ `PERSISTING`) with explicit pre-conditions, post-conditions, and recovery actions.
+
+ | **Section 3.4.3** |
+| **GAP-3.4-05** | Distributed publication hazards (partial failures across CAS and BCR).
+
+ | Integrated the publication phase with the Control Plane Saga outbox pattern (`POST /reserve` and `POST /commit`).
+
+ | **Section 3.4.3** |
+| **GAP-3.4-06** | Lack of static analysis and framework-specific determinism verification.
+
+ | Integrated `VerificationAdapter` with profiles for `ruff`, `mypy`, and AST-level `TemporalWorkflowValidator`.
+
+ | **Section 3.4.3** |
+| **GAP-3.4-07** | Non-standardized generated code (missing timezone specifications, mutable models).
+
+ | Standardized emission rules to generate immutable Pydantic models (`frozen=True`) and explicit UTC/timezone-aware SQLAlchemy ORM models.
+
+ | **Section 3.4.4** |
+
+ ### Section 3.5 Remediation Tracking Register Ledger
+
+Below is the dedicated tracking ledger mapping the co-reviewer feedback items resolved directly within this updated section:
+
+| Co-Architect Item | Review Gap Identified | Resolution Strategy Applied in Section 3.5 |
+| --- | --- | --- |
+| **Item #38** | Abrupt process killing (`SIGKILL`) on job cancellation risks orphaned buffers. | Implemented cooperative cancellation via thread-safe `cancel_requested` sub-state checks at stage boundaries, ensuring clean staging buffer purges. |
+| **Item #39** | Conflated distributed timeout parameters across API, workers, and sidecars. | Formalized a 10-tier explicit timeout taxonomy (API, Queue Visibility, Lease, Heartbeat, Job SLA, Sub-process, BCR, CAS, OpenBao, OPA). |
+| **Item #40** | Unclassified retry logic leading to infinite loops on syntax/policy errors. | Integrated explicit error taxonomy separating deterministic faults (zero retries) from transient faults (exponential backoff with full jitter). |
+| **Item #41** | Missing distributed tracing context across async boundary. | Embedded `trace_context` (`trace_id`, `span_id`) directly into the durable queue payload envelope and DB outbox schema. |
+| **Item #47** | Partial publication hazards across multi-artifact builds. | Enforced the `Build Artifact Manifest` as the single atomic unit of publication within an idempotent two-phase reservation/commit Saga. |
+| **Item #48** | Overlapping, ununified execution state models. | Standardized the pipeline on the canonical 14-state engine with orthogonal sub-state flags (`cancel_requested`, `retry_wait`, `reconciling`). |
+
+### Remediation Tracking Register Ledger (Section 4 Specifics)
+
+| Co-Architect Item | Review Gap & Impact | Remediation Strategy & Architectural Target | Target Section Number |
+| --- | --- | --- | --- |
+| **Item #25** | Hash chaining alone does not guarantee WORM audit integrity.
+
+ | Anchor event chain heads ($H_N$) to signed periodic checkpoints written to an external WORM audit store (S3 Object Lock + KMS).
+
+ | **Section 4.1.2** |
+| **Item #33** | `artifact_manifests` missing key provenance and lifecycle states.
+
+ | Expand `artifact_manifests` schema with `build_input_sha256`, `policy_bundle_sha256`, `kms_signature`, and state machine (`STAGED`, `PUBLISHED`, `REVOKED`).
+
+ | **Section 4.2.1** |
+| **Item #34** | URN primary keys lack explicit collision semantics.
+
+ | Implement transactional registration: matching CAS digest yields idempotent `200 OK`; conflicting CAS digest yields `409 Conflict`.
+
+ | **Section 4.2.2** |
+| **Item #35** | Split-brain risk across BCR, PostgreSQL closure, and NetworkX graphs.
+
+ | Designate BCR as authoritative system of record; implement `dag_lineage_closure` for $O(V + E)$ PostgreSQL retrieval; run NetworkX in-memory.
+
+ | **Section 4.1.3** |
+| **Item #37** | Artifact signing identity and lifecycle undefined.
+
+ | Enforce KMS digital signatures over provenance manifests during stage transitions; record signatures in `artifact_manifests`.
+
+ | **Section 4.2.1** |
+| **Item #45** | Undefined PostgreSQL zero-downtime migration protocol.
+
+ | Mandate **Expand $\rightarrow$ Migrate $\rightarrow$ Contract** deployment patterns for all database migrations.
+
+ | **Section 4.1.1** |
+| **Item #46** | Unchecked version compatibility between compiler and runtimes.
+
+ | Embed `compiler_version` and `target_runtime_constraints` JSONB metadata inside registered `artifact_manifests` records.
+
+ | **Section 4.2.1** |
+| **Item #47** | Partial publication hazards across multi-artifact builds.
+
+ | Introduce `lifecycle_state` (`STAGED` $\rightarrow$ `PUBLISHED`) in `artifact_manifests` to publish all target CAS blobs as a single atomic unit.
+
+ | **Section 4.2.1** |
+
+ ### Tracked Remediation Ledger for Section 5
+
+| Co-Architect Item | Review Gap Identified | Architectural Remediation in Section 5 |
+| --- | --- | --- |
+| **Item #23**<br> | JWT validation lacked key rotation semantics.
+
+ | Added claim requirements (`iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `tenant_id`) and automated JWKS key discovery loops with cached TTLs in **5.2.1**.
+
+ |
+| **Item #24**<br> | Ambiguous OpenBao startup acquisition vs dynamic renewal.
+
+ | Formalized short-lived AppRole token leasing, background renewal loops, and graceful worker shutdown on lease loss in **5.2.3**.
+
+ |
+| **Item #25**<br> | Hash chaining alone lacked external WORM integrity.
+
+ | Integrated signed periodic checkpoint anchoring ($H_N$) to external WORM storage (S3 Object Lock) in **5.2.3**.
+
+ |
+| **Item #26**<br> | Fallbacks during DB connection exhaustion risked stale authorization.
+
+ | Enforced strict cache trust tiers and fail-closed security for authorization and mutations during pool exhaustion in **5.3**.
+
+ |
+| **Item #27**<br> | Ambiguous OPA failure codes (`500` vs policy denial).
+
+ | Standardized responses: `403 Forbidden` for policy rejections and `503 Service Unavailable` with `Retry-After: 15` for sidecar timeouts in **5.3**.
+
+ |
+| **Item #28**<br> | Stale static 512 MB worker RAM limit conflicted with admission model.
+
+ | Replaced static process limits with pre-ingestion admission controls (`max_ast_nodes`, `max_payload_bytes`) and container cgroup bounds in **5.1.2 & 5.3**.
+
+ |
+| **Item #41**<br> | Missing distributed tracing NFR requirements.
+
+ | Mandated OpenTelemetry context propagation (`traceparent`, `tracestate`, `trace_id`, `span_id`) across API, worker, queue, and database loops in **5.1.3**.
+
+ |
+| **Item #42**<br> | SLOs omitted non-latency reliability metrics.
+
+ | Established explicit quantitative SLOs for API availability ($99.95\%$), completion success ($\ge 99.9\%$), queue age, and CAS integrity in **5.1.3**.
+
+ |

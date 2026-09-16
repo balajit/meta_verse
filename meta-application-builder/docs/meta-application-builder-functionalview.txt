@@ -1,0 +1,69 @@
+### meta-application-builder domains/subsystem
+The BCR (Blueprint Component Registry) & CAS (Content-Addressed Storage) subsystem acts as the immutable storage, identity validation, and dependency resolution engine for application blueprints and compiled binaries.
+
+**Functional Groups & Component Responsibilities**
+
+**1. Component Identity & Lifecycle Governance**
+
+* **`urn_resolver/urn_parser.py`**: Serves as the domain's addressing system. Parses canonical URN strings (`urn:meta:bcr:{tenant}:{component_type}:{name}:{version}`) into validated Pydantic models.
+
+
+* **`urn_resolver/lifecycle_state.py`**: Governs allowed status changes (DRAFT, ACTIVE, DEPRECATED, RETIRED) to prevent invalid state shifts (such as editing a retired component).
+
+
+* **`payloads/urn_validation.json`**: Provides sample payload definitions used for schema testing and structural URN validation.
+
+
+
+**2. Physical Byte Storage & Integrity**
+
+* **`cas_service/cas_storage.py`**: Manages content-addressed disk persistence. Stores binary artifacts in directory paths keyed by the first two hex characters of their digest (e.g., `/a1/a1b2c3...`) using atomic `os.replace` tempfile writes.
+
+
+* **`cas_service/digest_verifier.py`**: Calculates 64KB streaming SHA-256 hashes to verify bit-for-bit payload integrity before writing to or reading from disk.
+
+
+
+**3. Dependency Resolution & Publication Orchestration**
+
+* **`bulk_api/resolve_batch.py`**: Builds NetworkX directed acyclic graphs (DAGs) out of interconnected URNs. Ensures no cyclic dependencies exist and verifies every dependency is in a valid lifecycle state before returning topological build order.
+
+
+* **`bulk_api/publication_saga.py`**: Manages transactional multi-artifact publishing using a two-phase reserve/commit/rollback saga workflow.
+
+
+
+**4. Error Boundaries**
+
+* **`exceptions.py`**: Centralized exception hierarchy (`BCRError`, `InvalidURNError`, `StorageError`, `SagaError`) ensuring domain failures are caught cleanly.
+
+
+
+---
+
+**Subsystem Thread & Interrelationship Flow**
+
+```text
+[ Raw String URN ] ──> urn_parser.py ──> ( Valid ComponentURN )
+                                               │
+                                               ▼
+[ Dependency Maps ] ──> resolve_batch.py ──> lifecycle_state.py
+                                 │
+                                 ▼ ( Validated Topological DAG )
+                        publication_saga.py
+                                 │
+                                 ▼ ( Binary Stream )
+                        digest_verifier.py ──> cas_storage.py
+
+```
+
+1. **Identity Phase**: Incoming artifact requests enter via `urn_parser.py` to establish a validated URN identity.
+
+
+2. **Resolution Phase**: `resolve_batch.py` accepts target URNs, querying `lifecycle_state.py` to reject retired or deprecated dependencies while sorting execution order.
+
+
+3. **Transaction Phase**: `publication_saga.py` opens a saga reservation (`reserve_batch`) for all artifacts in the batch.
+
+
+4. **Persistence Phase**: As binary payload streams arrive for the saga, `digest_verifier.py` computes the SHA-256 hash, and `cas_storage.py` writes the content atomically to permanent storage. Once all artifacts persist, `publication_saga.py` marks the transaction committed.

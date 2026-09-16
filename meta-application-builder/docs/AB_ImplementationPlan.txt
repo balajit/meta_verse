@@ -1,0 +1,234 @@
+I acknowledge my role as **Principal System Architect**.
+
+Below is the dependency-ordered, phase-by-phase implementation plan for constructing the **Application Builder Engine** within `meta-application-builder/src/meta_application_builder`.
+
+---
+
+## Phase Execution Order & Dependency Topology
+
+To prevent circular dependencies and broken abstractions, code generation must proceed strictly bottom-up along the architectural DAG:
+
+```
+[Phase 0: Foundation & Security]
+       │
+       ▼
+[Phase 1: Persistence Layer]
+       │
+       ├────────────────────────┐
+       ▼                        ▼
+[Phase 2: Governance]    [Phase 3: BCR & CAS]
+       │                        │
+       └──────────┬─────────────┘
+                  ▼
+[Phase 4: Compilation Engine]
+                  │
+                  ▼
+[Phase 5: Control Plane Orchestration]
+                  │
+                  ▼
+[Phase 6: Experience Plane & Interfaces]
+
+```
+
+---
+
+## Phase 0: System Foundation, Governance & Boundary Protocols
+
+**Prerequisites:** None.
+
+**Primary Goal:** Establish security primitives, JWT claims validation, zero-trust tenant context passing, and local container orchestration.
+
+### Implementation Order & Deliverables
+
+1. **`foundation/security_context/claims.py`**: Define Pydantic models for parsing and validating OIDC RS256 JWT claims (`tenant_id`, `sub`, `iss`, `aud`).
+
+
+2. **`foundation/security_context/identity.py`**: Implement context-var storage (`ContextVar`) and gateway/in-process identity extraction to ensure thread/async task-isolated identity propagation.
+
+
+3. **`foundation/openbao_config/policy_approle.hcl`**: Configure OpenBao AppRole policies, secret engine mounts, and token renewal parameters.
+
+
+4. **`foundation/governance_rego/tenant_isolation.rego`**: Author Rego assertions enforcing tenant scope boundaries (`urn:meta:bcr:provider:{tenant_id}:*`).
+
+
+5. **`foundation/governance_rego/immutability_rules.rego`**: Author Rego rules enforcing attribute inheritance policies (`FINAL`, `EXTENDABLE`, `OVERRIDABLE`).
+
+
+6. **`foundation/docker_infra/docker-compose.yml`**: Wire local sidecars (OPA, OpenBao, PostgreSQL 16) with health checks.
+
+
+
+---
+
+## Phase 1: Persistence Plane & Relational Storage Layer
+
+**Prerequisites:** Phase 0 (`identity.py` for RLS variables).
+
+**Primary Goal:** Build the relational foundation, AsyncPG pooling, Row-Level Security (RLS) policies, precomputed DAG closure mapping, and cryptographically chained audit logging.
+
+### Implementation Order & Deliverables
+
+1. **`persistence/db_session/connection.py`**: Configure AsyncPG engine with session-level dynamic SQL execution for setting `app.tenant_id`.
+
+
+2. **`persistence/models/base.py`**: Define `AsyncAttrs` declarative base class with generic mixins (timestamps, UUID primary keys, tenant keys).
+
+
+3. **`persistence/models/registry.py`**: Implement ORM models for `specifications_registry` and `dag_lineage_closure` tables.
+
+
+4. **`persistence/models/audit.py`**: Implement ORM models for `build_job_audit`, `build_job_events`, and `build_idempotency_keys`.
+
+
+5. **`persistence/event_chain/crypt_chain.py`**: Implement SHA-256 cryptographic hash-chaining logic ($H_n = \text{SHA256}(H_{n-1} \parallel \text{payload})$) to ensure tamper-evident execution logs.
+
+
+6. **`persistence/migrations/env.py`**: Setup Alembic async migration environment configured for "Expand $\rightarrow$ Migrate $\rightarrow$ Contract" schema updates.
+
+
+
+---
+
+## Phase 2: Specification Management & Hybrid Governance Engine
+
+**Prerequisites:** Phase 0 (Security Context & Rego Rules) and Phase 1 (Persistence Models).
+
+**Primary Goal:** Construct the three-stage validation pipeline (Static Syntax $\rightarrow$ NetworkX Topological DAG $\rightarrow$ Sidecar OPA Governance).
+
+### Implementation Order & Deliverables
+
+1. **`spec_governance/schemas/rfc7807_error.py`**: Implement standardized RFC-7807 problem detail response builders (`MBR-001` through `MBR-010`).
+
+
+2. **`spec_governance/schemas/det_schema.py`**: Define Pydantic v2 domain schemas for Domain Entity Templates (DETs).
+
+
+3. **`spec_governance/phase_a_static/syntax_checker.py`**: Implement fast-fail JSON/YAML schema validation, regex formatters, and payload size bounds.
+
+
+4. **`spec_governance/phase_a_static/immutability_eval.py`**: Build tier-checking logic evaluating field mutations against `FINAL`, `EXTENDABLE`, and `OVERRIDABLE` tiers.
+
+
+5. **`spec_governance/phase_b_topology/networkx_dag.py`**: Implement `DiGraph` analysis for $O(V+E)$ cycle detection and topological sorting.
+
+
+6. **`spec_governance/phase_c_policy/opa_client.py`**: Implement high-throughput AsyncIO client for low-latency sidecar OPA evaluation calls.
+
+
+
+---
+
+## Phase 3: Blueprint Component Registry (BCR) & CAS Engine
+
+**Prerequisites:** Phase 0 (Identity) and Phase 1 (Registry Models).
+
+**Primary Goal:** Implement URN parsing, component lifecycle state machines, physical Content-Addressed Storage (CAS), and atomic multi-artifact publication sagas.
+
+### Implementation Order & Deliverables
+
+1. **`bcr_cas/urn_resolver/urn_parser.py`**: Build parser and validator for `urn:meta:bcr:...` structured strings.
+
+
+2. **`bcr_cas/urn_resolver/lifecycle_state.py`**: Implement state machine governing transitions (`DRAFT` $\rightarrow$ `ACTIVE` $\rightarrow$ `DEPRECATED` $\rightarrow$ `RETIRED`).
+
+
+3. **`bcr_cas/cas_service/digest_verifier.py`**: Construct streaming SHA-256 digest calculation and verification routines.
+
+
+4. **`bcr_cas/cas_service/cas_storage.py`**: Implement physical CAS engine supporting atomic temp-file promotion, path sharding, and immutability guarantees.
+
+
+5. **`bcr_cas/bulk_api/resolve_batch.py`**: Construct batch resolution algorithm resolving dependency trees into unified manifest lists.
+
+
+6. **`bcr_cas/bulk_api/publication_saga.py`**: Implement two-phase commit controllers (`/reserve` and `/commit`) for multi-component publish actions.
+
+
+
+---
+
+## Phase 4: Compilation Engine & Code Synthesis Facade
+
+**Prerequisites:** Phase 2 (Validated DET Schemas) and Phase 3 (CAS Pointers).
+
+**Primary Goal:** Transform spec deltas into canonical `ManifestIR`, synthesize AST code representations, and emit formatted/validated Python modules.
+
+### Implementation Order & Deliverables
+
+1. **`compiler_engine/brain_adapter/ir_sanitizer.py`**: Build input sanitizer converting untrusted structures into standardized `UNTRUSTED IR`.
+
+
+2. **`compiler_engine/polymorph_adapter/manifest_merger.py`**: Implement multi-tier delta merging algorithm producing unified `ManifestIR`.
+
+
+3. **`compiler_engine/meta_compiler/ast_builder.py`**: Construct generic Python AST node generation wrappers.
+
+
+4. **`compiler_engine/meta_compiler/pydantic_emitter.py`**: Build emitter synthesizing strict, immutable Pydantic v2 data models.
+
+
+5. **`compiler_engine/meta_compiler/sqlalchemy_emitter.py`**: Build emitter synthesizing Async SQLAlchemy 2.0 ORM model code strings.
+
+
+6. **`compiler_engine/verification/ruff_mypy_runner.py`**: Implement isolated process runner invoking `ruff` formatting and `mypy --strict` verification.
+
+
+7. **`compiler_engine/verification/temporal_validator.py`**: Build AST inspection routines checking for non-deterministic patterns in workflow code.
+
+
+
+---
+
+## Phase 5: Build Orchestration & Control Plane Pipeline
+
+**Prerequisites:** Phase 1 (Audit Log & Outbox Tables) and Phase 4 (Compiler Facade).
+
+**Primary Goal:** Drive job builds through a 14-state canonical lifecycle using dual-lock worker fencing, transactional outbox publishing, and cooperative cancellation.
+
+### Implementation Order & Deliverables
+
+1. **`orchestration/state_engine/dual_lock_fencing.py`**: Implement optimistic locking checks (`lease_generation` + `version_id`) to invalidate stale worker processes.
+
+
+2. **`orchestration/state_engine/state_machine.py`**: Implement atomic state manager handling valid transitions across the 14-stage build lifecycle.
+
+
+3. **`orchestration/outbox_queue/queue_envelope.py`**: Construct structured event envelope classes containing OpenTelemetry trace headers.
+
+
+4. **`orchestration/outbox_queue/outbox_publisher.py`**: Implement transactional outbox background worker dispatching events to external brokers.
+
+
+5. **`orchestration/recovery/retry_jitter.py`**: Implement full-jitter exponential backoff calculators for transient infrastructure recovery.
+
+
+6. **`orchestration/recovery/forward_reconciliation.py`**: Construct self-healing reconciliation loops to fix incomplete CAS/BCR state bindings.
+
+
+7. **`orchestration/worker/pipeline_worker.py`**: Assemble main build worker loop executing validation, compilation, packaging, and heartbeat signals.
+
+
+
+---
+
+## Phase 6: Experience Plane, REST/gRPC API & CLI Tooling
+
+**Prerequisites:** All previous phases (Phase 0 through Phase 5).
+
+**Primary Goal:** Expose HTTP REST endpoints, CLI interfaces, and complete OpenTelemetry observability context wrappers.
+
+### Implementation Order & Deliverables
+
+1. **`experience/telemetry/otel_config.py`**: Initialize OpenTelemetry tracer provider, metric meters, and trace propagation formats.
+2. **`experience/api_gateway/submit_endpoint.py`**: Implement `POST /v1/build/submit` handler with transactional idempotency enforcement.
+3. **`experience/api_gateway/validate_endpoint.py`**: Implement `POST /v1/build/validate` handler executing dry-run validation pipelines.
+4. **`experience/api_gateway/status_endpoint.py`**: Implement `GET /v1/build/status/{job_id}` and cancellation handlers.
+5. **`experience/api_gateway/artifact_endpoint.py`**: Implement `GET /v1/build/artifacts/{job_id}` handler exposing CAS artifact pointers and provenance metadata.
+6. **`experience/cli_tool/direct_mode.py`**: Implement local in-process runner keeping security and policy validation active.
+7. **`experience/cli_tool/remote_mode.py`**: Implement HTTP/gRPC transport client wrapper targeting central Application Builder deployments.
+8. **`experience/cli_tool/main.py`**: Assemble Click/Typer CLI commands routing inputs between Direct Mode and Remote Mode profiles.
+
+---
+
+Which phase or specific module would you like to implement first?

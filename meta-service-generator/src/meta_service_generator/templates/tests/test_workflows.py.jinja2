@@ -1,0 +1,37 @@
+# Synthesized workflow step runner tests
+from __future__ import annotations
+
+import pytest
+
+
+{% for workflow in workflows %}
+@pytest.mark.asyncio
+async def test_workflow_{{ workflow.name | snake_case }}_execution() -> None:
+    """Verify step handler resolution and DAG workflow execution [source: 3]."""
+
+    from {{ package_name }}.execution.{{ workflow.name | snake_case }}_workflow import (
+        {{ workflow.name | pascal_case }}WorkflowRunner,
+    )
+
+    async def mock_handler(
+        payload: dict,
+        results: dict,
+    ) -> str:
+        return "step_success"
+
+    handlers = {
+{% for step in workflow.steps %}
+        {{ step.name | python_literal }}: mock_handler,
+{% endfor %}
+    }
+
+    runner = {{ workflow.name | pascal_case }}WorkflowRunner(
+        step_handlers=handlers
+    )
+
+    execution_results = await runner.execute(
+        payload={}
+    )
+
+    assert len(execution_results) == {{ workflow.steps | length }}
+{% endfor %}

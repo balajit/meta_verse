@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import logging
+from typing import Any, Final
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from {{ package_name }}.models.{{ model.name | snake_case }}_orm import (
+    {{ model.class_name }}ORM,
+)
+
+logger: Final[logging.Logger] = logging.getLogger(__name__)
+
+
+class {{ model.class_name }}Repository:
+    """Persistence operations for {{ model.class_name }} [source: 9]."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_by_id(
+        self,
+        entity_id: Any,
+    ) -> {{ model.class_name }}ORM | None:
+        """Retrieve ORM entity by primary key [source: 9]."""
+        logger.debug("Fetching {{ model.class_name }}ORM with ID: %s", entity_id)
+        try:
+            return await self.session.get(
+                {{ model.class_name }}ORM,
+                entity_id,
+            )
+        except Exception as exc:
+            logger.exception("Failed to retrieve {{ model.class_name }}ORM with ID %s: %s", entity_id, exc)
+            raise
+
+    async def list_all(
+        self,
+        filters: dict[str, Any] | None = None,
+    ) -> list[{{ model.class_name }}ORM]:
+        """Query and return all ORM entities matching optional filters [source: 9]."""
+        logger.debug("Listing {{ model.class_name }}ORM entities with filters: %s", filters)
+        try:
+            stmt = select({{ model.class_name }}ORM)
+            if filters:
+                for key, value in filters.items():
+                    if hasattr({{ model.class_name }}ORM, key) and value is not None:
+                        stmt = stmt.where(getattr({{ model.class_name }}ORM, key) == value)
+            result = await self.session.execute(stmt)
+            return list(result.scalars().all())
+        except Exception as exc:
+            logger.exception("Failed to list {{ model.class_name }}ORM entities: %s", exc)
+            raise
+
+    async def create(
+        self,
+        **kwargs: Any,
+    ) -> {{ model.class_name }}ORM:
+        """Instantiate and persist a new ORM entity [source: 9]."""
+        logger.debug("Creating {{ model.class_name }}ORM entity with parameters: %s", kwargs)
+        try:
+            if "id_" not in kwargs or kwargs["id_"] is None:
+                kwargs["id_"] = str(uuid.uuid4())
+
+            instance = {{ model.class_name }}ORM(**kwargs)
+            self.session.add(instance)
+            await self.session.flush()
+            await self.session.refresh(instance)
+            logger.debug("Successfully created {{ model.class_name }}ORM with ID: %s", getattr(instance, "id_", None))
+            return instance
+        except Exception as exc:
+            logger.exception("Failed to create {{ model.class_name }}ORM entity: %s", exc)
+            raise
+
+    async def update(
+        self,
+        entity_id: Any,
+        **kwargs: Any,
+    ) -> {{ model.class_name }}ORM | None:
+        """Update attribute fields on an existing ORM entity [source: 9]."""
+        logger.debug("Updating {{ model.class_name }}ORM with ID: %s", entity_id)
+        try:
+            instance = await self.get_by_id(entity_id)
+            if instance is None:
+                logger.warning("{{ model.class_name }}ORM with ID %s not found for update", entity_id)
+                return None
+            for key, value in kwargs.items():
+                if hasattr(instance, key) and value is not None:
+                    setattr(instance, key, value)
+            await self.session.flush()
+            await self.session.refresh(instance)
+            logger.debug("Successfully updated {{ model.class_name }}ORM with ID: %s", entity_id)
+            return instance
+        except Exception as exc:
+            logger.exception("Failed to update {{ model.class_name }}ORM with ID %s: %s", entity_id, exc)
+            raise
+
+    async def delete(
+        self,
+        entity_id: Any,
+    ) -> bool:
+        """Remove an ORM entity by primary key [source: 9]."""
+        logger.debug("Deleting {{ model.class_name }}ORM with ID: %s", entity_id)
+        try:
+            instance = await self.get_by_id(entity_id)
+            if instance is None:
+                logger.warning("{{ model.class_name }}ORM with ID %s not found for deletion", entity_id)
+                return False
+            await self.session.delete(instance)
+            await self.session.flush()
+            logger.debug("Successfully deleted {{ model.class_name }}ORM with ID: %s", entity_id)
+            return True
+        except Exception as exc:
+            logger.exception("Failed to delete {{ model.class_name }}ORM with ID %s: %s", entity_id, exc)
+            raise

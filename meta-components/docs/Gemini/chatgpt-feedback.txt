@@ -1,0 +1,1534 @@
+Co-Architect Architectural Review & Gap Remediation
+The architecture is substantially more mature than the earlier iterations: it now has explicit authority boundaries, immutable artifacts, governance gates, durable build state, tenant isolation, CAS integrity, and recovery semantics.
+However, there are several cross-section inconsistencies and unresolved distributed-systems contracts that should be corrected before implementation. The most important issue is that some later architectural decisions supersede earlier sections, but the earlier sections have not yet been normalized. That creates ambiguity for implementers.
+
+I recommend treating the following as the Architecture Review Action Register, with each item explicitly mapped to the section where it should be applied.
+
+1. Section 2.1 — Boundary Architecture: Plane Model Is Internally Inconsistent
+Gap
+The document states that the architecture has a Five-Plane Model, but then enumerates:
+Experience
+Control / Orchestration
+Governance
+Registry
+Compilation
+Persistence
+That is six planes.
+Additionally, the diagrams still effectively describe a boundary plane plus internal state plane rather than the later six-plane architecture.
+
+Risk
+Different implementation teams could interpret service placement differently.
+For example:
+
+Is API Gateway part of Experience or Control?
+Is OPA its own plane or part of Governance?
+Is PostgreSQL part of Persistence only?
+Does BCR belong to Registry or Internal State?
+Solution
+Rename this explicitly to:
+Six-Plane Architecture
+and establish authoritative ownership:
+Plane	Primary responsibility
+Experience	REST API, CLI, external request contracts
+Control / Orchestration	Job lifecycle, queue, workers, leases, cancellation
+Governance	Authentication context, OPA, validation, policy enforcement
+Registry	BCR, URN resolution, lifecycle, lineage authority
+Compilation	meta_builder, meta_builder_brain, meta_polymorph, meta_compiler
+Persistence	PostgreSQL, CAS, audit/WORM projection
+
+Apply to
+Section 2.1 — replace the current two-plane conceptual model with the six-plane model.
+Also update the high-level architecture diagram so that the diagram and prose use the same plane terminology.
+
+2. Section 2.2 — Component Responsibility Matrix: Ownership Boundaries Need to Be Made Authoritative
+Gap
+There are several overlapping responsibilities.
+For example, earlier sections describe:
+
+BCR as authoritative for specifications.
+PostgreSQL specifications_registry as a persistent specification store.
+meta_builder as authoritative for build state.
+CAS as authoritative for artifact content.
+But it is not yet obvious whether specifications_registry is:
+a cache,
+a projection,
+a BCR implementation detail,
+or an independent registry.
+Risk
+This is a classic split-brain source-of-truth problem.
+An implementation could modify:
+
+PostgreSQL.specifications_registry
+
+without modifying BCR, creating:
+BCR -> ACTIVE version A
+PostgreSQL -> ACTIVE version B
+
+Solution
+Introduce an explicit Authority Matrix.
+Proposed addition to Section 2.2
+Data Object	Authoritative System	Consumer/Cache	Mutation Owner
+Blueprint manifest	BCR	PostgreSQL projection/cache	BCR
+Blueprint lifecycle	BCR	PostgreSQL projection	BCR
+URN → CAS mapping	BCR	PostgreSQL projection	BCR
+CAS blob	CAS	None	CAS writer
+Build state	meta_builder PostgreSQL	Redis/UI caches	Build orchestrator
+Build events	meta_builder PostgreSQL + WORM anchor	Search/log systems	Event writer
+Artifact manifest	BCR	meta_builder projection	BCR
+Build reproducibility manifest	meta_builder	BCR reference	Build orchestrator
+
+Then explicitly state:
+specifications_registry is a projection/cache of BCR state, not an independent specification authority.
+If the intention instead is for PostgreSQL to implement BCR, that needs to be stated explicitly and the architectural distinction removed.
+3. Section 3.1 — Specification Management Interface: Request Idempotency Is Underspecified
+Gap
+Section 3.5 requires:
+Idempotency-Key: UUID
+
+but Section 3.1 does not define the persistence model for it.
+Risk
+A retry can produce duplicate jobs if the API process crashes after job creation but before returning the response.
+Solution
+Add an idempotency table.
+CREATE TABLE build_idempotency_keys (
+    tenant_id UUID NOT NULL,
+    idempotency_key VARCHAR(255) NOT NULL,
+    request_sha256 CHAR(64) NOT NULL,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (tenant_id, idempotency_key)
+);
+
+The transaction should be:
+BEGIN
+  INSERT idempotency key
+  INSERT build job
+  INSERT queue/outbox event
+COMMIT
+
+If the key already exists:
+same request hash -> return existing job
+different request hash -> 409 Conflict
+
+Apply to
+Section 3.1 and Section 3.5.1
+Define idempotency as a transactional API concern rather than merely an HTTP-header convention.
+
+4. Section 3.5.1 — Durable Queue Is Not Defined Enough
+Gap
+The specification says:
+Durable Queue guaranteeing at-least-once execution, visibility timeouts, and DLQ routing.
+But no queue technology or queue contract is defined.
+Risk
+At-least-once delivery means duplicate execution is expected.
+Therefore queue semantics must be explicitly reconciled with job-state semantics.
+
+Solution
+Define the queue contract independently of implementation technology.
+Required properties:
+
+Message ID
+Job ID
+Tenant ID
+Attempt number
+Enqueued timestamp
+Visibility deadline
+Lease owner
+Trace/correlation ID
+
+Worker acquisition should be:
+queue delivery
+      ↓
+database lease acquisition
+      ↓
+state transition QUEUED → INGESTING
+      ↓
+processing
+
+The database job state remains authoritative; the queue is only the delivery mechanism.
+This is important because the queue itself should never become the system of record for build state.
+
+Apply to
+Section 3.5.1
+Add:
+
+The durable queue is a delivery substrate, not an authoritative job-state store.
+5. Section 3.5.2 — Job State Machine Needs Formal Transition Rules
+Gap
+The state sequence is defined:
+SUBMITTED
+→ QUEUED
+→ INGESTING
+→ GOVERNANCE_VALIDATING
+...
+
+but permitted transitions, illegal transitions, and ownership rules are not defined.
+Solution
+Create a transition matrix.
+Current	Allowed Next State
+SUBMITTED	QUEUED, REJECTED
+QUEUED	INGESTING, EXPIRED, CANCELLED
+INGESTING	GOVERNANCE_VALIDATING, FAILED, CANCELLED
+GOVERNANCE_VALIDATING	MERGING, FAILED, REJECTED
+MERGING	COMPILING, FAILED
+COMPILING	VERIFYING, FAILED, CANCELLED
+VERIFYING	HASHING, FAILED
+HASHING	PUBLISHING, FAILED
+PUBLISHING	PERSISTING, RECONCILING, FAILED
+PERSISTING	COMPLETED, RECONCILING
+RECONCILING	PUBLISHED, FAILED
+RETRY_WAIT	previous non-terminal state
+any terminal state	no transition
+
+Then enforce it in the database/service layer.
+For example:
+
+UPDATE build_job_audit
+SET status = :new_status,
+    version_id = version_id + 1
+WHERE job_id = :job_id
+  AND status = :expected_current_status
+  AND version_id = :expected_version;
+
+Require exactly one row affected.
+Apply to
+Section 3.5.2 and Section 4.1.1
+The state machine should not exist only as documentation.
+
+6. Section 3.5.2 — Worker Lease and Job State Are Two Different Locks
+Gap
+The architecture currently mixes:
+queue visibility timeout,
+worker lease,
+database optimistic locking.
+These are related but distinct mechanisms.
+Solution
+Define them separately:
+Queue visibility timeout
+    = message delivery protection
+
+Worker lease
+    = execution ownership
+
+Optimistic version_id
+    = state mutation concurrency protection
+
+A worker must possess both:
+valid worker lease
++
+valid job-state version
+
+to perform a state transition.
+A stale worker must be rejected even if it continues executing after its lease expires.
+
+Apply to
+Section 3.5.2
+Add a fencing token.
+
+For example:
+
+lease_generation = 42
+
+Every state update includes:
+WHERE lease_generation = 42
+
+A replacement worker receives:
+lease_generation = 43
+
+The old worker can therefore no longer mutate state.
+This is a major distributed-systems hardening measure.
+
+7. Section 3.3.2 vs Section 3.5.3 — Two-Phase Commit and Saga Conflict
+Gap
+This is one of the clearest architectural contradictions.
+Section 3.3 says:
+
+Two-Phase Registration Protocol
+with:
+reserve → commit
+
+Section 3.5 explicitly says:
+The brittle two-phase commit is replaced with an idempotent Saga/outbox protocol.
+But Section 3.4 still says:
+Executes the two-phase commit protocol.
+Solution
+Choose one authoritative model.
+The later architecture should be normalized around:
+
+CAS staging
+      ↓
+CAS verification
+      ↓
+DB outbox intent
+      ↓
+CAS publication
+      ↓
+BCR idempotent registration
+      ↓
+DB reconciliation
+      ↓
+PUBLISHED
+
+The BCR may still expose:
+reserve()
+commit()
+
+internally, but that should not be described as a distributed transaction.
+It is an idempotent registration API invoked by the Saga.
+
+Apply to
+Sections 3.3.2, 3.3.3, 3.4.3, and 3.5.3
+Replace language such as:
+
+Two-Phase Commit
+with:
+Idempotent Artifact Publication Saga
+where appropriate.
+8. Section 3.5.3 — Saga Compensation Is Not Fully Defined
+Gap
+The Saga defines forward actions but not complete compensation semantics.
+For example:
+
+CAS published
+BCR committed
+PostgreSQL unavailable
+
+What happens?
+Solution
+Explicitly define compensatable vs non-compensatable operations.
+Operation	Compensation
+Temporary CAS staging	Delete staging data
+CAS final publication	No rollback; immutable
+BCR artifact registration	Idempotent reconciliation
+PostgreSQL manifest	Retry transaction
+Build status	Reconcile
+Audit event	Never delete
+
+The important principle:
+Published immutable artifacts are never deleted merely because downstream bookkeeping failed.
+Instead:
+PUBLISHING
+   ↓
+RECONCILING
+   ↓
+PUBLISHED
+
+Apply to
+Section 3.5.3
+9. Section 3.3.3 / 4.2 — CAS Authority Needs a Distributed Storage Contract
+Gap
+The document simultaneously describes CAS as:
+physical authoritative storage,
+local filesystem,
+potentially object storage,
+and a secondary object-store failover.
+The semantics of these stores are not defined.
+Risk
+Two CAS nodes could disagree about whether a blob exists.
+Solution
+Define CAS abstractly:
+CAS Interface
+ ├── put(digest, bytes)
+ ├── get(digest)
+ ├── exists(digest)
+ ├── verify(digest)
+ └── delete_staging(token)
+
+Then define implementations:
+LocalFilesystemCAS
+ObjectStorageCAS
+
+For production multi-node deployment, object storage should generally be the authoritative shared implementation, while local disk can be a cache/staging layer.
+If local filesystem remains authoritative, the architecture needs explicit shared-volume/high-availability semantics.
+
+Apply to
+Section 4.2.3
+Clarify:
+
+CAS authority refers to the logical CAS service, not necessarily a specific physical storage implementation.
+10. Section 4.1 — Audit Event Normalization Has Not Actually Been Applied
+Gap
+The text says:
+Audit Event Normalization: Replaces the mutable execution_logs JSONB array with an append-only build_job_events table.
+But the SQL still contains:
+execution_logs JSONB NOT NULL DEFAULT '[]'::jsonb
+
+This directly contradicts the stated architectural correction.
+Solution
+Create:
+CREATE TABLE build_job_events (
+    event_id BIGSERIAL PRIMARY KEY,
+    job_id UUID NOT NULL REFERENCES build_job_audit(job_id),
+    sequence_no BIGINT NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    stage VARCHAR(64),
+    severity VARCHAR(16) NOT NULL,
+    event_payload JSONB NOT NULL,
+    previous_event_hash CHAR(64),
+    event_hash CHAR(64) NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(job_id, sequence_no)
+);
+
+Then remove:
+execution_logs JSONB
+
+from build_job_audit.
+Apply to
+Section 4.1.1 and Section 5.2.3
+This should be treated as a required correction, not an optional optimization.
+
+11. Section 4.1.1 — Build Job Schema Is Missing Tenant Ownership
+Gap
+Tenant isolation is an explicit architectural requirement, but:
+build_job_audit
+
+does not contain tenant_id.
+Neither does artifact_manifests.
+
+Solution
+Every tenant-owned operational object needs an explicit tenant key.
+For example:
+
+tenant_id UUID NOT NULL
+
+on:
+build jobs
+build events
+artifact manifests
+build inputs
+lineage projections where appropriate
+idempotency keys
+provenance manifests
+Then enable PostgreSQL RLS.
+Conceptually:
+
+CREATE POLICY tenant_isolation
+ON build_job_audit
+USING (tenant_id = current_setting('app.tenant_id')::uuid);
+
+The application must establish the tenant context inside the transaction.
+Apply to
+Sections 4.1.1 and 5.2.1
+12. Section 4.1 — DAG Closure Complexity Is Still Incorrect
+Gap
+The architecture correctly recognized that graph retrieval is not inherently O(1), but the document still contains:
+$O(1)$ lookup time using closure tables
+A closure table can make reachability existence checks highly efficient, but retrieving an entire subgraph remains proportional to the result size.
+Correct formulation
+For a returned subgraph of V nodes and E edges:
+O(V + E)
+
+after indexed closure lookup.
+For reachability existence:
+
+O(log N)
+
+or effectively constant-ish under particular indexed access patterns, but it should not be represented as a universal O(1) claim.
+Apply to
+Sections 4.1.2 and 5.1.1
+Replace:
+
+O(1) graph retrieval
+with:
+Indexed closure lookup followed by result-size-proportional graph materialization, O(V + E).
+13. Section 3.3.2 — BCR Lifecycle State Machine Needs Version-Level Semantics
+Gap
+The architecture defines:
+DRAFT → ACTIVE → DEPRECATED → RETIRED
+
+but does not clearly state whether lifecycle state applies to:
+a URN,
+a version,
+a logical component,
+or an artifact.
+Solution
+Make lifecycle state version-specific.
+For example:
+
+Subscriber:v1.0.0 → RETIRED
+Subscriber:v1.1.0 → ACTIVE
+
+Retiring v1.0.0 must not affect v1.1.0.
+Also prohibit mutable transition of an ACTIVE version's content.
+
+Apply to
+Section 3.3.2
+Add:
+
+Lifecycle state is attached to an immutable versioned registry record, not to the logical component name.
+14. Section 3.3.2 — DEPRECATED Resolution Policy Is Ambiguous
+Gap
+One place says deprecated artifacts are operational and generate warnings; another resolution example has:
+"allow_deprecated": false
+
+But there is no policy defining whether a deprecated transitive dependency is allowed.
+Solution
+Define resolution policy:
+Root ACTIVE + transitive ACTIVE       → PASS
+Root ACTIVE + transitive DEPRECATED   → WARN/CONFIGURABLE
+Root ACTIVE + transitive RETIRED      → REJECT
+Root DEPRECATED + allow_deprecated=false → REJECT
+
+Also record the exact resolved lifecycle states in the reproducibility manifest.
+Apply to
+Section 3.3.2 and 3.3.3
+15. Section 3.4 — Deterministic Generation Is Not Yet Actually Deterministic
+Gap
+The requirement says:
+identical input specs always yield byte-for-byte identical output code.
+But the architecture currently contains several nondeterministic sources:
+LLM synthesis
+timestamps
+generated UUIDs
+dictionary ordering
+dependency resolution order
+tool versions
+environment variables
+filesystem ordering
+Python version
+formatter version
+compiler version
+The generated example itself contains:
+datetime.utcnow
+
+and comments containing generated metadata.
+Solution
+Introduce a formal Build Reproducibility Manifest.
+{
+  "source_spec_digest": "...",
+  "resolved_dependency_digests": [],
+  "compiler_version": "...",
+  "polymorph_version": "...",
+  "brain_version": "...",
+  "python_version": "...",
+  "ruff_version": "...",
+  "mypy_version": "...",
+  "target_config_digest": "...",
+  "policy_bundle_digest": "...",
+  "template_bundle_digest": "...",
+  "generation_mode": "deterministic"
+}
+
+Then define:
+build_input_digest =
+SHA256(canonical(reproducibility_manifest))
+
+The generated artifact becomes a function of the closed manifest:
+Artifact = F(BuildInputDigest)
+
+Apply to
+Sections 3.4.3, 3.5.3, and 4.2
+16. Section 3.4.1 — LLM Synthesis Is Inconsistent With Deterministic Compilation
+Gap
+meta_builder_brain is described as performing:
+Multi-pass LLM domain synthesis
+while the overall build requires deterministic, reproducible output.
+LLMs are inherently probabilistic unless constrained appropriately.
+
+Solution
+Separate:
+LLM-assisted synthesis
+
+from:
+deterministic compilation
+
+Architecture:
+Raw specification
+      ↓
+LLM synthesis
+      ↓
+UNTRUSTED IR
+      ↓
+schema validation
+      ↓
+policy validation
+      ↓
+canonical normalization
+      ↓
+immutable ManifestIR
+      ↓
+deterministic compiler
+
+The LLM output must never directly participate in code generation.
+For reproducibility, persist:
+
+model identifier
+model version
+inference configuration
+prompt/template digest
+tool version
+generated intermediate representation
+resulting normalized IR digest
+Apply to
+Sections 3.4.1, 3.4.2, and 5.2.
+17. Section 3.4.2 — mypy --strict as a Universal Generation Gate Is Too Strong
+Gap
+The architecture mandates:
+mypy --strict static analysis passes with zero type errors.
+Generated projects may have:
+third-party stubs unavailable,
+plugin-generated types,
+framework-specific dynamic constructs,
+optional dependencies,
+target-specific typing requirements.
+Solution
+Define a target-specific verification profile.
+For example:
+
+verification_profile:
+  python:
+    formatter: ruff
+    formatter_version: "..."
+    type_checker: mypy
+    mode: strict
+    error_budget: 0
+
+But permit target-specific configurations where justified.
+The important requirement is:
+
+Verification configuration becomes part of the reproducibility manifest.
+Apply to
+Section 3.4.2 and 5.1.1
+18. Section 3.4.4 — Generated SQLAlchemy Example Has a Reproducibility Problem
+Gap
+The example uses:
+default=datetime.utcnow
+
+Modern Python deprecates datetime.utcnow() and, more importantly, generated persistence code should establish timezone semantics explicitly.
+Solution
+Generate timezone-aware UTC behavior consistently.
+For example, conceptually:
+
+default=lambda: datetime.now(timezone.utc)
+
+or preferably use database-side defaults when persistence semantics require authoritative DB timestamps.
+More importantly, define whether:
+
+created_at
+
+is:
+application-generated,
+database-generated,
+or compiler-generated.
+Apply to
+Section 3.4.4
+19. Section 3.4 — Temporal Workflow Determinism Needs a Dedicated Contract
+Gap
+The architecture correctly identifies Temporal, but Temporal workflows have strict deterministic execution requirements.
+The current description only says:
+
+non-deterministic execution safeguards.
+That is insufficient.
+Solution
+Add explicit rules:
+Workflow code may not directly perform
+arbitrary network calls
+filesystem operations
+nondeterministic random operations
+wall-clock reads
+uncontrolled environment access
+These belong in activities or controlled Temporal APIs.
+The generator should distinguish:
+
+Workflow AST
+Activity AST
+
+and statically reject prohibited operations.
+Apply to
+Section 3.4.4
+Add:
+
+TemporalWorkflowValidator as a dedicated compiler verification stage.
+20. Section 3.4 — Generator Ownership Is Still Too Broad
+Gap
+The revised section correctly says the generator is an orchestration facade, but it still owns:
+formatting,
+hashing,
+persistence,
+registration,
+transaction control,
+quality verification.
+This risks recreating the monolith that the revision was intended to eliminate.
+Solution
+Make the generator an explicit coordinator:
+ApplicationComponentGenerator
+        │
+        ├── BrainAdapter
+        ├── PolymorphAdapter
+        ├── CompilerAdapter
+        ├── VerificationAdapter
+        ├── CASAdapter
+        ├── BCRAdapter
+        └── PersistenceAdapter
+
+The generator owns workflow sequencing and policy, not implementation mechanics.
+Apply to
+Section 3.4.1
+21. Section 5.1.1 — Performance SLAs Are Not Yet Feasibility Contracts
+Gap
+The specification has very aggressive values such as:
+P95 end-to-end < 600 ms
+
+while simultaneously supporting:
+LLM synthesis,
+BCR graph resolution,
+OPA,
+OpenBao,
+AST compilation,
+ruff,
+mypy,
+CAS persistence,
+PostgreSQL,
+asynchronous workers.
+The architecture does not explain whether those operations are included in the latency SLA.
+Solution
+Split latency into:
+API acceptance SLA
+POST /submit
+→ durable job accepted
+
+and:
+Build completion SLA
+job execution
+→ artifact publication
+
+For example:
+API acceptance:
+P95 < 100 ms
+
+Simple deterministic build:
+P95 < X
+
+LLM-assisted build:
+P95 < Y
+
+Large build:
+quota-dependent
+
+This is much more operationally meaningful than one universal number.
+Apply to
+Section 5.1.1
+22. Section 5.1.2 — Resource Admission Controls Need Concrete Semantics
+Gap
+The architecture says:
+max_AST_nodes
+max_generated_bytes
+
+but doesn't define when these limits are evaluated.
+Solution
+Perform admission control before expensive resource allocation.
+request
+ ↓
+authentication
+ ↓
+tenant quota lookup
+ ↓
+cheap input-size inspection
+ ↓
+estimated AST complexity
+ ↓
+admission decision
+ ↓
+queue
+
+Define quotas at tenant and possibly role level:
+tenant_quota:
+  max_concurrent_builds: 20
+  max_ast_nodes: 100000
+  max_generated_bytes: 50MB
+  max_dependency_depth: 32
+  max_artifacts_per_build: 500
+  max_build_duration: 15m
+
+Apply to
+Section 5.1.2
+23. Section 5.2.1 — JWT Validation Needs Key Rotation Semantics
+Gap
+The architecture says:
+RS256
+but doesn't define:
+JWKS discovery,
+key rotation,
+issuer configuration,
+audience validation,
+clock skew,
+token revocation strategy.
+Solution
+Require:
+iss
+sub
+aud
+exp
+iat
+nbf
+tenant_id
+
+and validate against configured issuer/JWKS.
+Cache JWKS keys with controlled TTL and support overlapping signing keys during rotation.
+
+Also avoid treating tenant_id from an unverified token as authoritative; it becomes trusted only after successful signature and claim validation.
+
+Apply to
+Section 5.2.1
+24. Section 5.2.2 — OpenBao Startup Model Is Ambiguous
+Gap
+The document says:
+credentials are fetched dynamically at startup using short-lived AppRole authentication tokens.
+Startup acquisition and continuous dynamic secret renewal are different concerns.
+Solution
+Define:
+Bootstrap credential
+      ↓
+OpenBao authentication
+      ↓
+short-lived access token
+      ↓
+leased secret
+      ↓
+renewal
+      ↓
+rotation
+      ↓
+revocation
+
+Workers must not permanently retain credentials.
+Also define behavior when a secret lease cannot be renewed:
+
+stop accepting new work
+finish safely where possible
+release lease
+transition jobs to retry/reconciliation
+
+Apply to
+Section 5.2.2
+25. Section 5.2.3 — SHA-256 Hash Chaining Is Not Equivalent to WORM Integrity
+Gap
+Hash chaining detects modification only if the trusted chain head is protected.
+If an attacker can modify:
+
+event 1
+event 2
+...
+event N
+
+and the stored chain anchor, the chain can potentially be rewritten consistently.
+Solution
+The architecture correctly mentions WORM anchoring, but needs to make the anchor explicit.
+For example:
+
+Event N
+ ↓
+H_N
+ ↓
+periodic signed checkpoint
+ ↓
+external WORM audit store
+
+Use a trusted checkpoint:
+job_id
+last_sequence
+last_event_hash
+timestamp
+signature
+
+Then the database chain is tamper-evident relative to the external checkpoint.
+Apply to
+Sections 4.1 and 5.2.3
+26. Section 5.3 — PostgreSQL Pool Exhaustion Recovery Is Too Optimistic
+Gap
+The proposed fallback says:
+Read-only URN resolutions fall back to local Redis cache replicas.
+But Redis is not otherwise part of the architecture and, more importantly, cached BCR state can be stale.
+Solution
+Introduce explicit cache trust levels:
+ACTIVE signed cache
+STALE cache
+UNTRUSTED cache
+
+For security-sensitive operations:
+BCR unavailable
+→ fail closed
+
+For non-mutating informational requests:
+signed cache
+→ may serve with stale indicator
+
+Do not allow stale cache data to authorize a build.
+Apply to
+Section 5.3
+27. Section 5.3 — OPA Failure Response Code Is Semantically Wrong
+Gap
+The document says:
+500 Governance Engine Unavailable
+A dependency failure is indeed server-side, but the security semantics need to distinguish:
+policy denied
+
+from:
+policy engine unavailable
+
+Solution
+Use:
+403 → policy evaluation completed and denied
+503 → policy engine unavailable
+
+with:
+Retry-After
+
+where appropriate.
+Apply to
+Section 5.3
+28. Section 5.3 — “Worker Memory > 512 MB” Contradicts the New Resource Model
+Gap
+The architecture explicitly says:
+replaces the arbitrary 512 MB worker memory limit
+but the failure matrix still says:
+worker memory usage exceeds cgroup limit (512 MB).
+This is another stale architectural artifact.
+Solution
+Replace the fixed limit with:
+tenant quota
++
+process cgroup safety ceiling
+
+The distinction matters.
+The tenant quota controls admission.
+
+The cgroup limit is an infrastructure safety boundary, not the application's workload quota.
+
+Apply to
+Sections 5.1.2 and 5.3
+29. Section 3.2.1 — Immutability Semantics Need Structural Granularity
+Gap
+The model currently describes:
+FINAL
+EXTENDABLE
+OVERRIDABLE
+
+at field level, but EXTENDABLE can apply to containers.
+What happens when a child attempts:
+
+EXTENDABLE array
+→ replace entire array
+
+or:
+EXTENDABLE map
+→ delete inherited key
+
+Solution
+Define operation-level permissions.
+FINAL
+  READ
+  └── INHERIT
+
+EXTENDABLE
+  ├── ADD
+  └── READ
+  ✗ REPLACE
+  ✗ DELETE
+
+OVERRIDABLE
+  ├── READ
+  ├── REPLACE
+  └── possibly DISABLE
+
+This should be represented in machine-readable policy metadata.
+Apply to
+Section 3.2.1 and 3.4.1
+30. Section 3.2.2 — Validation Must Distinguish Static Validation From External Dependency Validation
+Gap
+The section combines:
+syntax validation,
+type validation,
+graph validation,
+BCR existence checks.
+Those have different failure characteristics.
+Solution
+Split validation into:
+Phase A — Pure validation
+    JSON/YAML
+    schema
+    types
+    regex
+    immutability
+
+Phase B — Resolution validation
+    URN existence
+    lifecycle
+    dependency graph
+
+Phase C — Policy validation
+    OPA
+    tenant access
+    publication rights
+
+This improves:
+caching,
+testability,
+failure diagnosis,
+offline Direct Mode.
+Apply to
+Section 3.2.2
+31. Section 3.1 — Direct Mode Has a Security Boundary Problem
+Gap
+Direct Mode is described as:
+bypasses the network gateway, invoking Governance Engine, BCR client, and Code Generator directly.
+That can unintentionally imply that local execution bypasses security controls.
+Solution
+State explicitly:
+Direct Mode bypasses network transport, not authorization or governance semantics.
+Therefore Direct Mode must still execute:
+identity context
+→ authorization
+→ governance validation
+→ tenant scope
+→ lifecycle checks
+
+The difference is transport, not policy.
+Apply to
+Section 3.1 CLI specification
+32. Section 3.1 — Remote CLI Authentication Needs a Better Token Contract
+Gap
+The example uses:
+--auth-token $BUILDER_JWT_TOKEN
+
+but there is no distinction between:
+human user token,
+CI workload identity,
+service-account token.
+Solution
+Define authentication profiles:
+interactive user
+CI workload identity
+service-to-service identity
+
+Prefer short-lived credentials and workload identity for CI rather than long-lived environment secrets.
+Apply to
+Section 3.1
+33. Section 4.2 — Artifact Manifest Needs Provenance and Publication State
+Gap
+artifact_manifests contains the artifact hash but not sufficient provenance.
+Add
+source_manifest_sha256
+build_input_sha256
+compiler_version
+generator_version
+policy_bundle_sha256
+signature
+publication_state
+created_by
+tenant_id
+
+And distinguish:
+STAGED
+VERIFIED
+PUBLISHED
+RECONCILING
+REVOKED
+
+Although immutable artifact content itself should never be mutated.
+Apply to
+Section 4.2.1
+34. Section 4.2 — Artifact URN Collision Semantics Need an Explicit Unique Constraint
+Gap
+The architecture describes collision detection but only has:
+artifact_urn VARCHAR(255) PRIMARY KEY
+
+The database alone cannot establish whether an attempted replacement is identical.
+Solution
+Make registration logic transactional:
+existing URN?
+    │
+    ├── same CAS → idempotent success
+    │
+    └── different CAS → 409 Conflict
+
+Optionally maintain:
+UNIQUE (artifact_urn, cas_sha256)
+
+for explicit deduplication semantics.
+Apply to
+Sections 3.3.2 and 4.2.1
+35. Section 4.1 — Lineage Model Needs a Clear Source of Truth
+Gap
+The architecture has:
+BCR dependency graph
+PostgreSQL dag_lineage_edges
+NetworkX graph
+
+It is unclear which one is authoritative.
+Solution
+Declare:
+BCR
+ ↓
+authoritative dependency relationship
+ ↓
+PostgreSQL closure projection
+ ↓
+NetworkX in-memory execution graph
+
+Thus:
+BCR owns relationships.
+PostgreSQL accelerates retrieval.
+NetworkX performs computation.
+Neither NetworkX nor PostgreSQL may invent lineage.
+Apply to
+Sections 3.3.3 and 4.1
+36. Section 3.3.3 — Bulk Resolution Needs Maximum Graph Bounds
+Gap
+The bulk API supports:
+"include_transitive_dependencies": true
+
+but there is no limit.
+A malicious or pathological blueprint could create a massive dependency closure.
+
+Solution
+Add:
+{
+  "max_depth": 32,
+  "max_nodes": 10000,
+  "max_edges": 50000,
+  "max_payload_bytes": 10485760
+}
+
+If exceeded:
+413 Payload Too Large
+
+or a domain-specific validation/admission error.
+Apply to
+Section 3.3.3 and Section 5.1.2
+37. Section 3.4 — Artifact Signing Needs a Defined Trust Model
+Gap
+The architecture says:
+artifacts will be digitally signed
+but doesn't define:
+signing identity,
+key storage,
+signature format,
+verification location,
+key rotation.
+Solution
+Introduce:
+Artifact
+ ↓
+SHA-256
+ ↓
+Provenance Manifest
+ ↓
+Digital Signature
+ ↓
+CAS
+
+The signing key should be controlled by the publishing infrastructure, with private keys held by a dedicated signing service/HSM-backed system where required.
+Verification should occur:
+
+BCR registration
++
+artifact retrieval
++
+deployment/admission
+
+Apply to
+Sections 2.2, 3.4.3, 4.2, and 5.2.2
+38. Section 3.5.4 — Cancellation Semantics Need Cooperative Cancellation
+Gap
+The statement:
+Mid-compilation: Worker process is terminated.
+is too abrupt as a default mechanism.
+Solution
+Use:
+CANCEL_REQUESTED
+      ↓
+cooperative cancellation token
+      ↓
+compiler stops at safe checkpoint
+      ↓
+staging resources released
+      ↓
+CANCELLED
+
+Only use forced process termination as a timeout/resource-protection fallback.
+Never allow cancellation to interrupt a critical CAS publication operation halfway through a write.
+
+Apply to
+Section 3.5.4
+39. Section 3.5 — Missing Timeout Taxonomy
+Gap
+There is no clear distinction between:
+request timeout,
+queue timeout,
+worker lease timeout,
+build timeout,
+dependency timeout,
+CAS timeout,
+BCR timeout.
+Solution
+Define separate timers:
+API request timeout
+Queue visibility timeout
+Worker lease duration
+Worker heartbeat interval
+Maximum build duration
+Maximum stage duration
+BCR request timeout
+CAS operation timeout
+OpenBao lease duration
+OPA evaluation timeout
+
+These should not be conflated.
+Apply to
+Section 3.5.2 and Section 5.3
+40. Section 5.3 — Retry Classification Needs an Explicit Error Taxonomy
+Gap
+The architecture says transient errors retry and deterministic errors fail, but the actual classification is not formalized.
+Solution
+Define:
+Error	Retry
+PostgreSQL connection failure	Yes
+BCR 503	Yes
+CAS temporary unavailable	Yes
+OPA timeout	Yes
+Governance 422	No
+Invalid YAML	No
+Invalid regex	No
+DAG cycle	No
+URN collision/different hash	No
+CAS checksum mismatch	No
+Tenant authorization failure	No
+Worker lease loss	Reconcile
+Unknown internal exception	Limited retry
+
+Apply to
+Section 3.5.4 and Section 5.3
+41. Section 5.1 — Observability Is Missing as a First-Class NFR
+Gap
+The system is distributed across:
+API
+queue
+workers
+OPA
+OpenBao
+BCR
+CAS
+PostgreSQL
+compiler subsystems.
+Yet there is no explicit distributed tracing requirement.
+Solution
+Require:
+trace_id
+span_id
+job_id
+tenant_id
+build_id
+artifact_urn
+
+through every internal call.
+Instrumentation should cover:
+
+API
+→ queue
+→ worker
+→ BCR
+→ brain
+→ polymorph
+→ compiler
+→ CAS
+→ PostgreSQL
+
+Apply to
+Section 5.1 — add Section 5.1.3 Observability & SRE
+42. Section 5.1.3 — Add SLOs Beyond Latency
+The current NFRs emphasize latency but omit:
+availability,
+successful-build rate,
+reconciliation completion,
+queue age,
+DLQ rate,
+CAS integrity failures.
+Add operational SLOs such as:
+Build acceptance availability
+Build completion success rate
+Maximum queue age
+Maximum reconciliation age
+DLQ rate
+CAS verification failure rate
+BCR dependency availability
+
+These should be measured separately by tenant and build class where appropriate.
+43. Section 3.2.3 — RFC-7807 Error Model Needs Stable Machine Codes
+Gap
+The examples have:
+"rule": "IMMUTABILITY_VIOLATION"
+
+which is good, but the overall error taxonomy is not standardized.
+Solution
+Define stable error codes:
+MBR-001 INVALID_SPEC
+MBR-002 IMMUTABILITY_VIOLATION
+MBR-003 CYCLIC_DEPENDENCY
+MBR-004 URN_NOT_FOUND
+MBR-005 LIFECYCLE_REJECTED
+MBR-006 TENANT_ACCESS_DENIED
+MBR-007 CAS_CHECKSUM_MISMATCH
+MBR-008 RESOURCE_QUOTA_EXCEEDED
+MBR-009 BUILD_TIMEOUT
+MBR-010 PUBLICATION_CONFLICT
+
+Clients should branch on these codes rather than parsing human-readable detail.
+Apply to
+Section 3.2.3
+44. Section 3.1 — API Versioning Is Missing
+Gap
+The API has:
+/v1/
+
+but no compatibility policy.
+Solution
+Define:
+URI major version
+schema version
+compiler version
+BCR manifest version
+
+separately.
+For example:
+
+API v1
+Manifest schema v3
+Compiler 2.7.1
+
+Do not use API version as a substitute for artifact/specification versioning.
+Apply to
+Section 3.1
+45. Section 4.1 — Database Schema Migration Strategy Is Missing
+Gap
+PostgreSQL schema migration is mentioned, but there is no policy for migration safety.
+Solution
+Require:
+expand
+→ migrate
+→ contract
+
+for production schema evolution.
+Build workers must support at least one compatible schema version during rolling deployments.
+
+Apply to
+Section 4.1
+46. Section 3.4 — Compiler/Generator Version Compatibility Needs Enforcement
+Gap
+An artifact says:
+Generator v1.0.0
+
+but there is no compatibility declaration.
+Solution
+Add:
+{
+  "generator": {
+    "name": "meta_builder",
+    "version": "1.0.0"
+  },
+  "compiler": {
+    "name": "meta_compiler",
+    "version": "..."
+  },
+  "manifest_schema": "v3",
+  "runtime_contract": "v2"
+}
+
+BCR should record compatibility ranges.
+This prevents an old artifact from silently being treated as compatible with a new runtime contract.
+
+Apply to
+Sections 3.4.3 and 4.2.1
+47. Section 3.4 — Generated Artifact Packages Need Atomic Manifest Semantics
+Gap
+A build can generate:
+Pydantic
+SQLAlchemy
+Temporal
+FSM
+
+If only two publish successfully, what constitutes build success?
+Solution
+Define the build's publication unit.
+Two possible semantics need to be explicitly selected:
+
+Atomic logical publication
+All artifacts must become visible as one manifest.
+or:
+
+Independently publishable artifacts
+Each artifact has its own lifecycle, while the build manifest records partial completion.
+For this architecture, the cleaner contract is:
+
+individual CAS blobs immutable
++
+artifact set manifest is the atomic logical publication
+
+Therefore:
+Pydantic blob
+SQLAlchemy blob
+Temporal blob
+FSM blob
+        ↓
+Build Artifact Manifest
+        ↓
+PUBLISHED
+
+Apply to
+Sections 3.4.3 and 4.2
+48. Recommended Final Architecture State Machine
+The current document would benefit enormously from one authoritative state model rather than several overlapping state machines.
+I suggest making this the canonical build lifecycle:
+
+SUBMITTED
+   │
+   ▼
+QUEUED
+   │
+   ▼
+INGESTING
+   │
+   ▼
+GOVERNANCE_VALIDATING
+   │
+   ▼
+RESOLVING
+   │
+   ▼
+MERGING
+   │
+   ▼
+COMPILING
+   │
+   ▼
+VERIFYING
+   │
+   ▼
+HASHING
+   │
+   ▼
+STAGING
+   │
+   ▼
+PUBLISHING
+   │
+   ├───────────────┐
+   ▼               │
+PERSISTING         │
+   │               │
+   ▼               │
+COMPLETED          │
+                   │
+       failure ────┘
+             ↓
+        RECONCILING
+             │
+       ┌─────┴─────┐
+       ▼           ▼
+   COMPLETED      FAILED
+
+With orthogonal control states:
+CANCEL_REQUESTED
+RETRY_WAIT
+LEASE_LOST
+EXPIRED
+
+rather than making every operational condition a primary build state.
+49. Recommended Final Authority Model
+The most important architectural invariant should be documented in one place:
+                    ┌──────────────────────┐
+                    │        BCR           │
+                    │ Blueprint Authority  │
+                    └──────────┬───────────┘
+                               │
+                         resolved manifests
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    meta_builder      │
+                    │ Build State Authority│
+                    └──────────┬───────────┘
+                               │
+                       generated artifacts
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │         CAS          │
+                    │ Content Authority    │
+                    └──────────────────────┘
+
+PostgreSQL should then be explicitly divided:
+PostgreSQL
+├── Build state → authoritative
+├── Build events → authoritative + WORM checkpoint
+├── Artifact metadata → projection/reference
+├── BCR data → cache/projection
+└── CAS content → hash reference only
+
+This eliminates most of the split-brain ambiguity.
+50. Priority Order for Applying the Corrections
+I would not treat all gaps as equal. The following should be resolved before implementation contracts are frozen:
+P0 — Architectural correctness
+Section 2.1 — correct Five-Plane/Six-Plane model.
+Section 2.2 — establish authoritative System-of-Record matrix.
+Sections 3.3 / 3.5 — resolve two-phase-commit vs Saga contradiction.
+Section 4.1 — actually replace execution_logs JSONB with append-only events.
+Sections 4.1 / 5.2 — establish tenant ID + PostgreSQL RLS.
+Section 3.5 — formalize job state transitions and fencing.
+Section 4.2 — establish definitive CAS authority semantics.
+P1 — Build correctness and reproducibility
+Sections 3.4 / 4.2 — introduce the Build Reproducibility Manifest.
+Section 3.4 — separate nondeterministic LLM synthesis from deterministic compilation.
+Section 3.4.4 — define Temporal determinism validation.
+Section 3.5 — formalize retry, timeout, cancellation, and reconciliation semantics.
+Section 3.3 — define BCR lifecycle and dependency-resolution semantics.
+P2 — Security and operational hardening
+Section 5.2 — formalize JWKS/key rotation.
+Section 5.2.2 — define OpenBao lease/rotation behavior.
+Section 5.2.3 — formalize WORM checkpointing.
+Section 5.3 — remove stale 512 MB assumptions.
+Section 5.1 — add distributed tracing and operational SLOs.
+P3 — Developer/API maturity
+Section 3.1 — API compatibility/versioning.
+Section 3.1 — formal idempotency persistence.
+Section 3.2.3 — stable machine-readable error codes.
+Section 4.1 — migration compatibility strategy.
+Section 3.4 — compiler/runtime compatibility manifests.
+Overall Co-Architect Conclusion
+The architecture has the right major building blocks, but it is now at the point where consistency between sections is more important than adding additional components.
+The three architectural invariants I would make non-negotiable are:
+
+1. One authoritative owner for every piece of state.
+2. Every distributed operation must be idempotent and reconcilable rather than relying on distributed rollback.
+3. Every artifact must be reproducible from a closed, cryptographically identified build-input manifest.
+Once those three principles are enforced, the architecture becomes considerably easier to reason about:
+BCR
+  = specification authority
+
+meta_builder + PostgreSQL
+  = build-state authority
+
+CAS
+  = content authority
+
+Queue
+  = delivery mechanism
+
+NetworkX
+  = computation mechanism
+
+Redis/cache
+  = performance optimization
+
+LLM
+  = untrusted synthesis mechanism
+
+Generator
+  = orchestration/governance facade
+
+That separation is the key architectural boundary I would carry forward into the next design stage.
+The next logical section to formalize is Section 6: Control-Plane Data Contracts & State-Transition Protocols, because the remaining high-risk gaps are now concentrated around the exact database/outbox/queue/lease/event schemas and their atomic transition semantics.

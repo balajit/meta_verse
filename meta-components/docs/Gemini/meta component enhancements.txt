@@ -1,0 +1,23 @@
+Architecture Blueprint: meta_builder Application Engine
+
+To generate fully testable, production-ready modules via CLI—such as the target User Management module—we need to expand the capabilities of the core meta_* framework. This blueprint outlines the component extensions, systemic data flow, and CLI interface required for automated code generation.
+
+1. Core meta_* Component Enhancements
+
+    meta_compiler
+
+        AST Generator & Formatter: Translates schema definitions directly into executable Python AST representations and formats generated code using black and isort.
+
+        Test Synthesis Engine: Generates deterministic unittest suites (mocking external dependencies) and integration suites covering edge cases.
+
+    meta_polymorph
+
+        Dynamic Data Contract Mapper: Supports optional (Optional[T]) vs required entity associations (e.g., User requiring Address, but optionally holding Contact list).
+
+        Query Strategy Polymorphic Adapter: Automatically generates flexible filtering logic based on input search parameters (name, contact, address).
+
+    meta_builder_brain
+
+        Intent Resolution Engine: Parses CLI syntax and structured declarations to infer domain logic, state mutators (change_address, update_contact), and lookup methods.
+
+        Validation Rules Engine: Enforces data integrity rules, type safety, and relationship constraints prior to AST compilation.

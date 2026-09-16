@@ -1,0 +1,158 @@
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/scripts/msg_driver.py", line 125, in <module>
+    ServiceGeneratorDriver.run_pipeline()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/scripts/msg_driver.py", line 117, in run_pipeline
+    result = engine.generate_service(manifest_source=manifest, verify=True)
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/src/meta_service_generator/msg_engine.py", line 37, in generate_service
+    service_ir = ServiceIR.model_validate(manifest_source)
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/scripts/msg_driver.py", line 125, in <module>
+    ServiceGeneratorDriver.run_pipeline()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/scripts/msg_driver.py", line 117, in run_pipeline
+    result = engine.generate_service(manifest_source=manifest, verify=True)
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/src/meta_service_generator/msg_engine.py", line 37, in generate_service
+    service_ir = ServiceIR.model_validate(manifest_source)
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/.venv/lib/python3.13/site-packages/pydantic/main.py", line 732, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        obj,
+        ^^^^
+    ...<5 lines>...
+        by_name=by_name,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/rajani/workspace/apps/meta_verse/meta-service-generator/.venv/lib/python3.13/site-packages/pydantic/main.py", line 732, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        obj,
+        ^^^^
+    ...<5 lines>...
+        by_name=by_name,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+pydantic_core._pydantic_core.ValidationError: 20 validation errors for ServiceIR
+models
+  Field required [type=missing, input_value={'version': '1.0.0', 'ser...: True, 'verify': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.name
+  Field required [type=missing, input_value={'step_id': 'validate_pay...', 'mode': 'sequential'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.action
+  Field required [type=missing, input_value={'step_id': 'validate_pay...', 'mode': 'sequential'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.step_id
+  Extra inputs are not permitted [type=extra_forbidden, input_value='validate_payload', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.0.mode
+  Extra inputs are not permitted [type=extra_forbidden, input_value='sequential', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.1.name
+  Field required [type=missing, input_value={'step_id': 'persist_orde...': ['validate_payload']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.1.action
+  Field required [type=missing, input_value={'step_id': 'persist_orde...': ['validate_payload']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.1.step_id
+  Extra inputs are not permitted [type=extra_forbidden, input_value='persist_order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.1.mode
+  Extra inputs are not permitted [type=extra_forbidden, input_value='sequential', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.entity
+  Extra inputs are not permitted [type=extra_forbidden, input_value='Order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.transactional
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+policies.0.roles
+  Field required [type=missing, input_value={'name': 'OrderAccessPoli...], 'delete': ['Admin']}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+policies.0.actions
+  Field required [type=missing, input_value={'name': 'OrderAccessPoli...], 'delete': ['Admin']}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+policies.0.entity
+  Extra inputs are not permitted [type=extra_forbidden, input_value='Order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+policies.0.rbac
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'create': ['Customer', '...'], 'delete': ['Admin']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+database
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'dialect': 'postgresql', 'driver': 'asyncpg'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+entities
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'Order', 'table...t', 'required': True}]}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+fsms
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'OrderFSM', 'en..._state': 'PUBLISHED'}]}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+business_rules
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'OrderValueVali... greater than zero.'}]}], input_type=lpydantic_core._pydantic_core.ValidationError: 20 validation errors for ServiceIR
+models
+  Field required [type=missing, input_value={'version': '1.0.0', 'ser...: True, 'verify': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.name
+  Field required [type=missing, input_value={'step_id': 'validate_pay...', 'mode': 'sequential'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.action
+  Field required [type=missing, input_value={'step_id': 'validate_pay...', 'mode': 'sequential'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.0.step_id
+  Extra inputs are not permitted [type=extra_forbidden, input_value='validate_payload', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.0.mode
+  Extra inputs are not permitted [type=extra_forbidden, input_value='sequential', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.1.name
+  Field required [type=missing, input_value={'step_id': 'persist_orde...': ['validate_payload']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.1.action
+  Field required [type=missing, input_value={'step_id': 'persist_orde...': ['validate_payload']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+workflows.0.steps.1.step_id
+  Extra inputs are not permitted [type=extra_forbidden, input_value='persist_order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.steps.1.mode
+  Extra inputs are not permitted [type=extra_forbidden, input_value='sequential', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.entity
+  Extra inputs are not permitted [type=extra_forbidden, input_value='Order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+workflows.0.transactional
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+policies.0.roles
+  Field required [type=missing, input_value={'name': 'OrderAccessPoli...], 'delete': ['Admin']}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+policies.0.actions
+  Field required [type=missing, input_value={'name': 'OrderAccessPoli...], 'delete': ['Admin']}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing
+policies.0.entity
+  Extra inputs are not permitted [type=extra_forbidden, input_value='Order', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+policies.0.rbac
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'create': ['Customer', '...'], 'delete': ['Admin']}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+database
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'dialect': 'postgresql', 'driver': 'asyncpg'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+entities
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'Order', 'table...t', 'required': True}]}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+fsms
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'OrderFSM', 'en..._state': 'PUBLISHED'}]}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+business_rules
+  Extra inputs are not permitted [type=extra_forbidden, input_value=[{'name': 'OrderValueVali... greater than zero.'}]}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+generation
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'output_directory': 'gen...': True, 'verify': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+ist]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden
+generation
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'output_directory': 'gen...': True, 'verify': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden

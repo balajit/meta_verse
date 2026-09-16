@@ -1,0 +1,135 @@
+You have hit on two critical architectural realities here: **Specification Traceability** and **Lifecycle Decoupling (Value Objects vs. Independent Managed Entities)**.
+
+By linking an entity back to regulatory specs (RFCs, ISO standards, corporate governance policies) and explicitly defining lifecycle behavior, `meta_builder_brain` can generate not just basic CRUD code, but compliance-aware validation, database cascade rules, and audit logging.
+
+Here is how we refine **Section 1 (Entity Overview)** and **Section 2 (Attributes & Data Elements)** to capture these business and governance requirements cleanly.
+
+---
+
+### **Domain Entity Template (DET)**
+
+#### **1. Entity Overview**
+
+* **Entity Name:** User / Customer
+* **Primary Purpose:** Represents an active user or customer account within the application.
+* **Unique Identifier:** `User ID` (Generated automatically)
+* **Standards & Compliance Traces:**
+* **Specification / RFC Reference:** RFC-5322 (Email standard format compliance), ISO-3166 (Country Codes)
+* **Data Governance & Privacy:** GDPR (Right to be Forgotten), CCPA, HIPAA (PII classification)
+* **Data Retention & Audit Policy:** Audit trail required for all state transitions (e.g., Active $\rightarrow$ Suspended). Record retention period: 7 years post-termination.
+
+
+
+---
+
+#### **2. Attributes & Data Elements**
+
+##### **A. Basic Fields**
+
+* **Name:** Text | Required | Searchable | PII (Classified)
+* **Account Status:** Choice (`Active`, `Suspended`, `Archived`) | Default: `Active` | Required | Audit Log On Change
+
+##### **B. Embedded Attributes (Value Objects — Lifecycle Bound)**
+
+> *Note: Lifecycle is tightly coupled to this User. If the User entity is destroyed or purged, this embedded data is destroyed with it.*
+
+* **Profile Preferences:** Optional (1)
+* **Fields:**
+* **Preferred Language:** Text | Default: "en-US"
+* **Marketing Opt-In:** Boolean | Default: `False`
+
+
+
+
+
+##### **C. Linked Entities & Relationships (Lifecycle Decoupled / Independent Entities)**
+
+> *Note: Independent Entities have an autonomous existence. If a User is removed, transferred, or deactivated, these entities persist in the system for historical, statutory, or operational continuity.*
+
+* **Service Address:** Required (Exactly 1 Linked)
+* **Relationship Type:** Linked Independent Entity (Shared/Persisted across lifecycle changes)
+* **Lifecycle Behavior:** **Orphan Allowed / Persist on User Deletion** *(e.g., Address record remains in the cable/utility system database even if the subscriber disconnects or moves).*
+* **Target Entity:** `Serviceable Location`
+* **Link Keys:** `Location ID`
+
+
+* **Contact Methods:** Optional (0 or Many)
+* **Relationship Type:** Embedded Collection / Owned Dependent
+* **Target Entity:** `Contact`
+* **Lifecycle Behavior:** **Cascade Delete** *(If User is purged under GDPR, contacts are purged).*
+* **Constraint:** Unique per Contact Type (e.g., maximum 1 primary "Email", 1 "Mobile").
+* **Fields:**
+* **Type:** Choice (`Email`, `Mobile`, `Work Phone`) | Required
+* **Value:** Text | Required | Searchable | PII (Classified)
+
+
+
+
+
+---
+
+### **Why This Blueprint Elevates `meta_builder**`
+* **`meta_polymorph` Lifecycle Inferences:**
+* Reading **"Cascade Delete"** vs. **"Persist on User Deletion"** tells `meta_polymorph` whether to generate foreign key constraints with `ON DELETE CASCADE` or `ON DELETE SET NULL` / soft-delete decoupling.
+
+* **`meta_compiler` Compliance Generation:**
+* Tagging fields as **`PII (Classified)`** automatically prompts `meta_compiler` to emit field-level encryption wrappers, anonymization methods for testing, and masked logging drivers.
+* Tagging **`Audit Log On Change`** generates state-machine interceptors inside `service.py` without requiring the user to explicitly write event-sourcing boilerplate.
+
+
+
+3. Business Rules & Constraints
+
+    A User cannot exist without an Address.
+
+    An Address consists of Street, City, State/Province, Postal Code, and Country.
+
+    A Contact must specify a Type (Email, Mobile, Work Phone) and a Value.
+
+    A User can have multiple contacts, but each contact type must be unique per user (e.g., only one primary Email).
+
+4. Lifecycle & Operations (What can happen to a User?)
+
+    Creation:
+
+        Action: Onboard New User
+
+        Requires: User Name, 1 Initial Address, 0+ Initial Contacts
+
+        Result: User is created in Active status with a unique ID.
+
+    Updates & Modifications:
+
+        Action: Change Address
+
+            Requires: User ID, New Address details
+
+            Rule: Replaces the existing address entirely (overwrites previous location).
+
+        Action: Manage Contacts
+
+            Requires: User ID, updated list of contacts
+
+            Rule: Can add new contacts, remove old ones, or update existing contact values.
+
+    Discovery & Search:
+
+        Action: Find Users
+
+        Search By Any Combination Of:
+
+            Partial or full Name
+
+            Contact info (e.g., look up by phone number or email)
+
+            Location criteria (e.g., find all users in a specific City or Zip Code)
+
+How meta_builder Transforms This Template
+
+By standardizing this template, meta_builder components can process the non-technical specification cleanly:
+
+    meta_builder_brain parses the structured text/YAML version of this template to map out the domain model graph and operation permissions.
+
+    meta_polymorph reads the "Connected Information" section to enforce relationship cardinality (1-to-1 required for Address, 1-to-Many optional for Contacts) and constructs dynamic search parameter definitions.
+
+    meta_compiler generates the low-level boilerplate (models.py, service.py, repository.py, and test_*.py) entirely behind the scenes, completely hidden from the human designer.

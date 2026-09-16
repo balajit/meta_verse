@@ -1,0 +1,87 @@
+generated_enterprise_service
+├── BUILD_REPORT.md
+├── build_manifest.json
+├── dist
+│   ├── enterprise_order_service-1.0.0-py3-none-any.whl
+│   └── enterprise_order_service-1.0.0.tar.gz
+├── execution
+│   ├── __init__.py
+│   ├── create_order_workflow_workflow.py
+│   ├── order_fsm.py
+│   └── order_rules.py
+├── extensions
+│   ├── __init__.py
+│   ├── config.py
+│   ├── policy.py
+│   └── telemetry.py
+├── main.py
+├── models
+│   ├── __init__.py
+│   ├── order_dtos.py
+│   ├── order_item_dtos.py
+│   ├── order_item_orm.py
+│   └── order_orm.py
+├── pyproject.toml
+├── repositories
+│   ├── __init__.py
+│   ├── order_item_repository.py
+│   └── order_repository.py
+├── routers
+│   ├── __init__.py
+│   ├── order_item_router.py
+│   └── order_router.py
+├── service
+│   ├── __init__.py
+│   ├── order_item_service.py
+│   └── order_service.py
+├── src
+│   ├── enterprise_order_service
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   └── __init__.cpython-313.pyc
+│   │   ├── execution
+│   │   │   ├── __init__.py
+│   │   │   └── __pycache__
+│   │   │       └── __init__.cpython-313.pyc
+│   │   ├── extensions
+│   │   │   ├── __init__.py
+│   │   │   └── __pycache__
+│   │   │       └── __init__.cpython-313.pyc
+│   │   ├── models
+│   │   │   ├── __init__.py
+│   │   │   └── __pycache__
+│   │   │       └── __init__.cpython-313.pyc
+│   │   ├── repositories
+│   │   │   ├── __init__.py
+│   │   │   └── __pycache__
+│   │   │       └── __init__.cpython-313.pyc
+│   │   ├── routers
+│   │   │   ├── __init__.py
+│   │   │   └── __pycache__
+│   │   │       └── __init__.cpython-313.pyc
+│   │   └── service
+│   │       ├── __init__.py
+│   │       └── __pycache__
+│   │           └── __init__.cpython-313.pyc
+│   ├── execution
+│   │   └── __init__.py
+│   ├── extensions
+│   │   └── __init__.py
+│   ├── models
+│   │   └── __init__.py
+│   ├── repositories
+│   │   └── __init__.py
+│   ├── routers
+│   │   └── __init__.py
+│   └── service
+│       └── __init__.py
+├── tests
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_fsm.py
+│   ├── test_order_item_routers.py
+│   ├── test_order_routers.py
+│   └── test_workflows.py
+└── uv.lock
+
+30 directories, 55 files

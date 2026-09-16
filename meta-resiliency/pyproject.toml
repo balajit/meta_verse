@@ -1,0 +1,131 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-resiliency"
+version = "0.1.0"
+description = "Production-grade resiliency decorators for retries, circuit breakers, rate limiters, and bulkheads with OpenTelemetry integration."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Core Systems Team", email = "architecture@meta-resiliency.internal" }
+]
+keywords = [
+    "resiliency",
+    "circuit-breaker",
+    "retry",
+    "rate-limiter",
+    "bulkhead",
+    "pybreaker",
+    "limits",
+    "tenacity",
+    "opentelemetry",
+    "asyncio"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed"
+]
+
+dependencies = [
+    "meta-config>=0.1.0",
+    "meta-context>=0.1.0",
+    "meta-telemetry>=0.1.0",
+    "tenacity>=9.0.0",
+    "pybreaker>=1.2.0",
+    "limits>=3.13.0",
+    "anyio>=4.0.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "structlog>=24.4.0",
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "mypy>=1.13.0",
+    "pylint>=3.3.0",
+    "pipdeptree>=2.23.0",
+    "uv>=0.5.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meta_resiliency"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/pyproject.toml"
+]
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "tenacity.*",
+    "pybreaker.*",
+    "limits.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "--strict-markers --strict-config -ra --cov=meta_resiliency --cov-report=term-missing"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pylint.main]
+py-version = "3.13"
+jobs = 0
+fail-under = 9.5
+
+[tool.pylint.basic]
+good-names = ["i", "j", "k", "ex", "Run", "_", "id"]
+
+[tool.pylint.messages_control]
+disable = [
+    "too-few-public-methods",
+    "duplicate-code"
+]
+
+[tool.uv.sources]
+meta-config = { path = "../meta-config", editable = true }
+meta-context = { path = "../meta-context", editable = true }
+meta-telemetry = { path = "../meta-telemetry", editable = true }
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+]

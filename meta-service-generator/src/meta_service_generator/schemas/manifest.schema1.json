@@ -1,0 +1,497 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meta.internal/schemas/manifest.schema.json",
+  "title": "ServiceManifest",
+  "description": "Strict declarative manifest for generating a service from domain entities, relationships, finite-state lifecycles, business rules, workflows, and authorization policies. The schema defines the structural contract; semantic cross-reference validation such as entity references, workflow-step dependencies, and expression correctness must additionally be performed by the manifest generator or validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "service_name",
+    "entities"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 5,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of the manifest itself."
+    },
+    "service_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Canonical snake_case identifier of the service being generated."
+    },
+    "entities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Entity"
+      },
+      "description": "Persistent or domain entities required to represent the supplied domain and workflows. Do not add speculative entities that are not required by the source specification."
+    },
+    "business_rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BusinessRule"
+      },
+      "description": "Domain invariants, validations, and business constraints."
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Workflow"
+      },
+      "description": "Declarative business workflows composed of ordered or dependency-linked steps."
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Policy"
+      },
+      "description": "Authorization policies defining which roles may perform which actions and, where applicable, which claims are required."
+    }
+  },
+  "$defs": {
+    "Attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Canonical snake_case attribute name."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "str",
+            "int",
+            "float",
+            "bool",
+            "datetime",
+            "uuid",
+            "dict",
+            "list"
+          ],
+          "description": "Supported primitive/domain storage type. This vocabulary is intentionally closed."
+        },
+        "primary_key": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this attribute is part of the entity's primary key."
+        },
+        "nullable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the attribute may contain a null value."
+        },
+        "unique": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether values of this attribute must be unique within the entity."
+        },
+        "indexed": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the attribute should be indexed for persistence/query purposes."
+        }
+      }
+    },
+    "Relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "target_entity",
+        "cardinality"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Canonical snake_case relationship name from the source entity to the target entity."
+        },
+        "target_entity": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$",
+          "description": "Name of the target entity. The referenced entity must exist in the manifest."
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "1:N",
+            "N:M"
+          ],
+          "description": "Relationship cardinality from the source entity to the target entity. 1:1 means one source instance relates to one target instance; 1:N means one source instance relates to many target instances; N:M means many source instances relate to many target instances."
+        },
+        "foreign_key": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Optional attribute on the source entity that stores the foreign-key identifier implementing the relationship. The referenced attribute must exist when this property is supplied."
+        }
+      }
+    },
+    "Transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trigger",
+        "source_state",
+        "target_state"
+      ],
+      "properties": {
+        "trigger": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Snake_case trigger that causes the state transition."
+        },
+        "source_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "State from which the transition is permitted."
+        },
+        "target_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "State reached after the transition."
+        },
+        "guards": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Semantic guard expressions or named domain conditions that must hold before the transition occurs."
+        }
+      }
+    },
+    "FSM": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state_attribute",
+        "initial_state",
+        "states",
+        "transitions"
+      ],
+      "properties": {
+        "state_attribute": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Attribute on the owning entity containing the current lifecycle state."
+        },
+        "initial_state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Initial state assigned when the entity is created."
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Complete set of lifecycle states supported by the entity."
+        },
+        "transitions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Transition"
+          },
+          "description": "Permitted state transitions. Every source_state and target_state must exist in states."
+        }
+      }
+    },
+    "Entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "attributes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$",
+          "description": "Canonical PascalCase domain entity name."
+        },
+        "class_name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$",
+          "description": "Explicit PascalCase Python class name used by FSM and Rule template generators."
+        },
+        "tableName": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Optional snake_case persistence table name."
+        },
+        "attributes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Attribute"
+          },
+          "description": "Attributes belonging to the entity."
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Relationship"
+          },
+          "description": "Relationships from this entity to other domain entities."
+        },
+        "fsm": {
+          "$ref": "#/$defs/FSM",
+          "description": "Optional finite-state machine describing the entity lifecycle."
+        }
+      }
+    },
+    "BusinessRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "target_entity",
+        "expression",
+        "error_message"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Canonical snake_case business-rule name."
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "Priority order used to sequence rule evaluation."
+        },
+        "target_entity": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$",
+          "description": "Entity to which the rule primarily applies. The referenced entity must exist in the manifest."
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque domain/business expression describing the condition that must hold. The manifest schema does not define an expression language; expression validation is performed outside JSON Schema."
+        },
+        "error_code": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9_]+$",
+          "description": "Standardized application error code emitted when the business rule fails."
+        },
+        "error_message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable failure message associated with violation of the rule."
+        }
+      }
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_retries"
+      ],
+      "properties": {
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 3,
+          "description": "Maximum retry attempts."
+        },
+        "multiplier": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0,
+          "description": "Exponential backoff multiplier."
+        },
+        "min_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0,
+          "description": "Minimum wait time in seconds between retries."
+        },
+        "max_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 10.0,
+          "description": "Maximum wait time cap in seconds."
+        }
+      }
+    },
+    "ExecutionMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "type": "string",
+          "enum": [
+            "sequential",
+            "parallel"
+          ],
+          "default": "sequential",
+          "description": "Workflow step execution strategy."
+        }
+      }
+    },
+    "WorkflowStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "action"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Unique snake_case identifier for the step within its workflow."
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Implementation-oriented semantic description of the operation performed by the step. This is not an executable command or formally typed API operation."
+        },
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": "Names of steps in the same workflow that must complete before this step can execute. References must be validated semantically outside JSON Schema and must not form cycles."
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 3,
+          "description": "Maximum number of retries permitted for this step."
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/RetryPolicy",
+          "description": "Nested exponential retry behavior definition evaluated by the step runner."
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional execution timeout limit in seconds for an individual step."
+        }
+      }
+    },
+    "Workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "steps"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Canonical snake_case workflow name."
+        },
+        "execution_mode": {
+          "$ref": "#/$defs/ExecutionMode",
+          "description": "Execution concurrency strategy used by the dynamic step runner."
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Overall workflow execution timeout limit in seconds."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          },
+          "description": "Steps comprising the workflow."
+        }
+      }
+    },
+    "Policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "roles",
+        "actions"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Canonical snake_case authorization policy name."
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": "Roles permitted by this policy."
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": "Actions authorized by this policy."
+        },
+        "claims_required": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "description": "Optional claims required to exercise the authorized actions."
+        }
+      }
+    }
+  }
+}

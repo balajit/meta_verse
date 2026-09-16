@@ -1,0 +1,507 @@
+Revised System Architecture v 0.1
+Author : Gemini
+Co-Author : A friend
+
+I acknowledge my role as **Principal System Architect**.
+
+### **Architectural Gap Analysis (System-Wide & Step 1 Ecosystem Plane)**
+
+#### **Critical Gaps Identified Across Prior Iterations:**
+
+1. **Trace Propagation Gap:** Lack of standardized distributed tracing context (OpenTelemetry / W3C `traceparent`) flowing across external CLI triggers, Temporal orchestrators, and BCR, preventing end-to-end triage from spec commit down to generated code execution.
+2. **Asynchronous Downstream Notification Gap:** Downstream compilation engines lack a unified pub/sub event mechanism (Kafka/EventBridge) to react automatically when an artifact or bundle lifecycle state changes (e.g., `ACTIVE` promotion or `ROLLBACK_SUPERSEDED` retraction).
+3. **Ecosystem Authentication & Scope Isolation:** Absence of explicit security context and caller scoping (`authoring` vs. `processing`) at the ecosystem trigger level, exposing processing engines to unvetted or draft inputs.
+4. **CLI/CI-CD Multi-File Bundle Staging:** Lack of a standardized CLI pipeline trigger payload capable of packaging local multi-file workspaces (inline specs + lifecycle state machines) and referencing registry dependencies in a single trigger step.
+
+---
+
+### **Step 1: Outside the System (Ecosystem & Access) — Updated Architecture**
+
+```
++-------------------------------------------------------------------------------------------------+
+|                                     EXTERNAL ECOSYSTEM PLANE                                    |
+|                                                                                                 |
+|  +------------------------+      +------------------------+      +---------------------------+  |
+|  | Developer CLI Tool     |      | CI/CD Pipeline (GitHub)|      | Downstream Generators     |  |
+|  | (Authoring Scope)      |      | (Automation Scope)     |      | (Processing Scope)        |  |
+|  +------------------------+      +------------------------+      +---------------------------+  |
+|               \                              |                              /                   |
+|                +-----------------------------+-----------------------------+                    |
+|                                              | (gRPC/HTTP + W3C TraceContext)                  |
+|                                              v                                                  |
+|  +-------------------------------------------------------------------------------------------+  |
+|  |                         TEMPORAL ORCHESTRATION ENGINE (WORKFLOWS)                         |  |
+|  |  * Ingestion & Dry-Run Workflows         * Reprocessing & Artifact Generation Workflows     |  |
+|  +-------------------------------------------------------------------------------------------+  |
+|                               /                              \                                  |
+|                              v                                v                                 |
+|  +---------------------------------------+       +-------------------------------------------+  |
+|  |       BCR SYSTEM BOUNDARY             |       |     EVENT BUS (Kafka / EventBridge)       |  |
+|  |  (Step 2 Contracts & Governance)      |-----> |   (Pub/Sub State Transition Notifications)|  |
+|  +---------------------------------------+       +-------------------------------------------+  |
+|                                                               |                                 |
+|                                                               v                                 |
+|  +-------------------------------------------------------------------------------------------+  |
+|  |                       OBSERVABILITY & TRACING (OpenTelemetry / X-Ray)                     |  |
+|  +-------------------------------------------------------------------------------------------+  |
++-------------------------------------------------------------------------------------------------+
+
+```
+
+---
+
+#### **1. Sub-Components & Ecosystem Flow**
+
+* **Developer CLI / CI-CD Runners:** Command-line tooling that inspects local workspaces, validates syntax, injects OpenTelemetry headers, and packages hybrid multi-file inputs for submission.
+* **Temporal Orchestration Engine:** Handles durable, long-running workflow execution for multi-stage ingestion, cross-facet validation, dry-run evaluations, and downstream application code generation.
+* **Event Bus (Kafka / EventBridge):** Decouples BCR from downstream compilation engines by emitting transactional events when entity lifecycles transition (`ACTIVE`, `DEPRECATED`, `ROLLBACK_SUPERSEDED`).
+* **Distributed Observability Layer (OpenTelemetry / AWS X-Ray):** Collects spans across CLI triggers, Temporal workflows, BCR persistence calls, and compiler tasks under a single `trace_id`.
+
+---
+
+#### **2. Concrete Interfaces & Payload Shapes**
+
+##### **Interface A: CI/CD & CLI Trigger Payload (`POST /v1/ecosystem/triggers/publish-bundle`)**
+
+```json
+{
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "tracestate": "bcr_tenant=midwest,bcr_env=prod"
+  },
+  "security_context": {
+    "caller_id": "usr_ci_builder_09",
+    "client_scope": "authoring",
+    "auth_token_claims": {
+      "roles": ["BCR_PUBLISHER"],
+      "organization": "Telecommunications"
+    }
+  },
+  "trigger_metadata": {
+    "source_repository": "github.com/telecom/midwest-order-module",
+    "git_commit_sha": "a1b2c3d4e5f67890123456789abcdef012345678",
+    "orchestration_workflow_id": "wf_ingest_ordermodule_v100"
+  },
+  "payload": {
+    "bundle_urn": "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0",
+    "inline_artifacts": [
+      {
+        "alias": "primary_spec",
+        "urn": "urn:meta:bcr:provider:midwest:specs:OrderSpec:v1.0.0",
+        "artifact_category": "SPEC",
+        "content_type": "application/json",
+        "content": {
+          "extends_urn": "urn:meta:bcr:telecom:blueprints:Order:v1.0.0",
+          "attributes": { "order_id": { "type": "UUID" } }
+        }
+      }
+    ],
+    "referenced_artifact_urns": [
+      {
+        "alias": "orchestration_workflow",
+        "member_urn": "urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.1.0"
+      }
+    ]
+  }
+}
+
+```
+
+##### **Interface B: Async Outbound Event Bus Payload (`bcr.entity.lifecycle_changed`)**
+
+```json
+{
+  "event_id": "evt_998877665544332211",
+  "event_type": "BCR_ENTITY_LIFECYCLE_CHANGED",
+  "timestamp": "2026-08-29T07:54:32Z",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "data": {
+    "urn": "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0",
+    "entity_type": "BUNDLE",
+    "previous_state": "DRAFT",
+    "new_state": "ACTIVE",
+    "composite_sha256": "7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e",
+    "impacted_downstream_subscribers": [
+      "temporal_worker_group_python_gen",
+      "temporal_worker_group_java_gen"
+    ]
+  }
+}
+
+```
+
+---
+
+#### **3. Edge Cases, Failure Modes, and Performance Trade-offs**
+
+| Category | Scenario / Failure Mode | Mitigation & Architectural Handling |
+| --- | --- | --- |
+| **Edge Case** | **Trace Context Loss Across Async Temporal Boundaries:** Trace headers get dropped when passing through asynchronous queue boundaries or Temporal activity retries. | **OpenTelemetry Carrier Context Injection:** Tracing headers are explicitly injected into Temporal workflow headers and Kafka record headers (`traceparent`), maintaining span continuity across async execution bounds. |
+| **Failure Mode** | **Downstream Event Bus Delivery Failure:** Kafka cluster unavailability during a bundle state transition prevents downstream compiler workers from receiving the `ACTIVE` promotion event. | **Transactional Outbox Pattern:** BCR writes event records to a relational `bcr_outbox` table within the same DB transaction as the bundle update. An asynchronous relay process polls the outbox and publishes to Kafka with at-least-once guarantees. |
+| **Trade-Off** | **Async Downstream Triggers vs. Synchronous Generation Pipeline:** Publishing to an event bus vs. synchronously holding the CLI connection open until code generation completes. | **Decision:** **Asynchronous event-driven triggers.** Generates higher resilience and decouples BCR storage from processing workloads, keeping CLI responses under 200ms while Temporal handles long-running generation tasks. |
+
+---
+
+Step 1 (Outside the System - Ecosystem & Access) is updated. Please review and provide your approval so we can proceed to update **Step 2 (System Boundary)**.
+
+I acknowledge my role as **Principal System Architect**.
+
+### **Architectural Gap Analysis (Step 2 System Boundary Plane)**
+
+#### **Critical Gaps Identified in Prior Iteration:**
+
+1. **Pre-Ingestion Hybrid Validation Gap:** Lack of an explicit dry-run / lint boundary API that validates inline specs *and* verifies existing URN references simultaneously before mutating state.
+2. **Schema Uniformity & Blueprint Version Matrix:** No strict contract governing how user specs declare lineage extensions (`extends_urn`) and delta overrides against baseline pre-fabricated blueprints.
+3. **Structured Boundary Errors & Corrective Feedback Loop:** Inadequate structured feedback mechanisms during validation failures, making human-in-the-loop or automated self-healing retry cycles difficult.
+4. **Processing Pipeline Boundary Interfaces:** Missing dedicated, read-optimized contracts tailored specifically for downstream code generation engines (e.g., resolving raw URNs into fully composed, merged operational models).
+
+---
+
+### **Step 2: System Boundary (Contracts & Feedback) — Updated Architecture**
+
+```
++-------------------------------------------------------------------------------------------------------+
+|                                        SYSTEM BOUNDARY PLANE                                          |
+|                                                                                                       |
+|  [ Inbound: CLI / CI-CD / Temporal Workflows ]       [ Outbound: Downstream Generators / Processors ]  |
+|                         |                                                    ^                        |
+|                         v                                                    |                        |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                               BCR API GATEWAY & AUTH BOUNDARY                                   |  |
+|  |               (Strict Scope Enforcement: Authoring vs. Processing APIs)                         |  |
+|  +-------------------------------------------------------------------------------------------------+  |
+|                         |                                                    |                        |
+|                         v                                                    v                        |
+|  +-----------------------------------+              +----------------------------------------------+  |
+|  |   HYBRID VALIDATION & FEEDBACK    |              |       BOUND RESOLUTION BOUNDARY SERVICE      |  |
+|  |            PIPELINE               |              |   (Dereferences & Flattens Blueprint Deltas) |  |
+|  +-----------------------------------+              +----------------------------------------------+  |
+|    |               |               |                                         |                        |
+|    v               v               v                                         |                        |
+|  +-------+    +---------+    +------------+                                  |                        |
+|  | Schema|    | URN & CAS|   | Graph &    |                                  |                        |
+|  | Linter|    | Integrity|   | Reference  |                                  |                        |
+|  | Engine|    | Check    |   | Resolver   |                                  |                        |
+|  +-------+    +---------+    +------------+                                  |                        |
+|    |               |               |                                         |                        |
+|    +---------------+---------------+                                         |                        |
+|                    |                                                         |                        |
+|                    v                                                         v                        |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                            BOUNDARY ERROR & EVENT AUDIT EMITTER                                 |  |
+|  |          (Formats RFC-7807 Errors / Emits Pre-Generation Audit Events to Outbox)                |  |
+|  +-------------------------------------------------------------------------------------------------+  |
++-------------------------------------------------------------------------------------------------------+
+                                                 |
+                                                 v
+                                 [ TO STEP 3: INTERNAL STORAGE PLANE ]
+
+```
+
+---
+
+#### **1. Boundary Sub-Components & Mechanics**
+
+* **API Gateway & Auth Boundary:** Enforces client scopes (`authoring` for publishing/editing vs. `processing` for downstream read/resolution). Rejects unauthenticated or malformed requests at the edge.
+* **Hybrid Validation & Feedback Pipeline:** Executes three mandatory sequential gates during dry-runs or ingestion:
+1. *Schema Linter Engine:* Syntactically parses inline specs and validates structure against JSON Schema definitions.
+2. *URN & Integrity Verifier:* Computes SHA-256 digests of inline assets and confirms canonical URN compliance (`urn:meta:bcr:<namespace>:<category>:<name>:v<semver>`).
+3. *Reference Existence Check:* Queries the registry state to ensure all referenced pre-existing URNs exist in an `ACTIVE` state.
+
+
+* **Bound Resolution Boundary Service:** Provides specialized, high-performance compilation interfaces for downstream generation pipelines by fetching a bundle, resolving all underlying member artifacts, and generating a single composite, fully merged operational view.
+* **Boundary Error & Audit Emitter:** Transforms boundary validation failures into standardized RFC-7807 structured feedback objects with remediation actions for human-in-the-loop correction.
+
+---
+
+#### **2. Concrete Interfaces & Payload Shapes**
+
+##### **Interface A: Pre-Generation Dry-Run & Lint Request (`POST /v1/boundary/bundles/validate`)**
+
+```json
+{
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+  },
+  "validation_scope": {
+    "dry_run": true,
+    "strict_schema_validation": true,
+    "allow_deprecated_references": false
+  },
+  "bundle_proposal": {
+    "urn": "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0",
+    "inline_artifacts": [
+      {
+        "alias": "primary_spec",
+        "urn": "urn:meta:bcr:provider:midwest:specs:OrderSpec:v1.0.0",
+        "artifact_category": "SPEC",
+        "content_type": "application/json",
+        "content": {
+          "extends_urn": "urn:meta:bcr:telecom:blueprints:Order:v1.0.0",
+          "delta_inputs": {
+            "attributes": {
+              "tax_code": { "type": "STRING", "required": true }
+            }
+          }
+        }
+      }
+    ],
+    "referenced_artifact_urns": [
+      {
+        "alias": "orchestration_workflow",
+        "member_urn": "urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.1.0"
+      }
+    ]
+  }
+}
+
+```
+
+##### **Interface B: RFC-7807 Human-in-the-Loop Validation Feedback Response (Validation Failure Scenario)**
+
+```json
+{
+  "type": "https://bcr.meta.urn/errors/validation-failed",
+  "title": "Bundle Pre-Generation Validation Failed",
+  "status": 422,
+  "detail": "One or more inline artifacts or referenced URNs failed boundary validation gates.",
+  "instance": "/v1/boundary/bundles/validate",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "invalid_params": [
+    {
+      "name": "unit_of_work.referenced_artifact_urns[0].member_urn",
+      "reason": "Referenced entity 'urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.1.0' is in 'DEPRECATED' status and cannot be bound to a new bundle.",
+      "remediation_suggestion": "Upgrade member_urn reference to 'urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.2.0'."
+    },
+    {
+      "name": "unit_of_work.inline_artifacts[0].content.delta_inputs.attributes.tax_code.type",
+      "reason": "Value 'STRING' violates Blueprint parent constraint (expected 'ENUM').",
+      "remediation_suggestion": "Change type to 'ENUM' or extend blueprint base schema 'urn:meta:bcr:telecom:blueprints:Order:v2.0.0'."
+    }
+  ]
+}
+
+```
+
+##### **Interface C: Bound Resolution Endpoint for Processors (`GET /v1/boundary/bundles/resolve?urn=...`)**
+
+```json
+{
+  "bundle_urn": "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0",
+  "resolved_at": "2026-08-29T07:58:00Z",
+  "composite_sha256": "7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e",
+  "resolved_model": {
+    "blueprint_urn": "urn:meta:bcr:telecom:blueprints:Order:v1.0.0",
+    "effective_spec": {
+      "attributes": {
+        "order_id": { "type": "UUID" },
+        "tax_code": { "type": "ENUM", "allowed_values": ["STANDARD", "EXEMPT"] }
+      }
+    },
+    "effective_workflow": {
+      "urn": "urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.2.0",
+      "steps": ["VALIDATE_ACCOUNT", "RESERVE_INVENTORY", "PROVISION_LINE"]
+    }
+  }
+}
+
+```
+
+---
+
+#### **3. Edge Cases, Failure Modes, and Performance Trade-offs**
+
+| Category | Scenario / Failure Mode | Mitigation & Architectural Handling |
+| --- | --- | --- |
+| **Edge Case** | **Circular Dependency in Extended Blueprints:** An inline spec declares an `extends_urn` that recursively references the bundle itself or forms a loop (`A -> B -> C -> A`). | **Depth-Bounded Resolution:** Graph edge verifier uses a cycle detection algorithm (Tarjan's/DFS) during dry-run validation. Rejects requests exceeding max recursion depth (10 levels) with `CIRCULAR_BLUEPRINT_DEPENDENCY`. |
+| **Failure Mode** | **Cascading Validation Lag Under High CLI Load:** Heavy JSON Schema parsing and URN lookups degrade validation throughput during major deployment windows. | **In-Memory Schema & Reference Cache:** Frequently checked blueprint schemas and entity state hashes are cached in Redis/in-memory boundary caches, dropping validation latency to < 5ms for standard dry-runs. |
+| **Trade-Off** | **Strict Pre-Ingestion Gates vs. Soft Warning Ingestion:** Blocking bundle ingestion on minor deprecation warnings vs. allowing soft warnings to pass. | **Decision:** **Strict validation failure at boundary.** Prevents bad specs or stale lifecycle references from entering the immutable CAS store, avoiding reprocessing cycles downstream. |
+
+---
+
+Step 2 (System Boundary - Contracts & Feedback) is complete and updated. We can now proceed to review or finalize the full multi-plane architecture.
+
+I acknowledge my role as **Principal System Architect**.
+
+### **Architectural Gap Analysis (Step 3 Internal Storage & Engine Plane)**
+
+#### **Critical Gaps Identified in Prior Iterations:**
+
+1. **Outbox Pattern Synchronization Gap:** In Step 1, we introduced the Transactional Outbox Pattern to guarantee event bus publishing, but the internal DB schema lacked an explicit `bcr_outbox` table and relay mechanism.
+2. **Reprocessing & Lineage Graph Traversal Mechanics:** Lacking clear API contracts for historical replay, artifact re-compilation, and upstream impact analysis when a core blueprint or workflow transitions lifecycle states.
+3. **Optimistic Locking & Version Race Conditions:** Concurrent updates to bundle membership or entity lifecycle states could lead to race conditions without explicit sequence versioning or CAS integrity locks in the database.
+4. **CAS Blob GC & Orphan Management:** No explicit mechanics defined for cleaning up uncommitted or dangling CAS storage objects resulting from partial transaction aborts or failed two-phase commits.
+
+---
+
+### **Step 3: Inside the System (State, Reprocessing & Engine Mechanics) — Updated Architecture**
+
+```
++-------------------------------------------------------------------------------------------------------+
+|                                  BCR INTERNAL STORAGE & ENGINE PLANE                                  |
+|                                                                                                       |
+|                                    [ FROM STEP 2: BOUNDARY LAYER ]                                    |
+|                                                   |                                                   |
+|                                                   v                                                   |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                  TWO-PHASE HYBRID BUNDLE INGESTION & REPROCESSING ENGINE                        |  |
+|  |                                                                                                 |  |
+|  |   +------------------------------------+       +---------------------------------------------+  |  |
+|  |   | Phase 1: Inline Blob Extraction &  | ----> | Phase 2: Atomic DB Transaction & Outbox     |  |  |
+|  |   | Immutable CAS Write                |       | Commit (Entities, Memberships, Outbox Event)|  |  |
+|  |   +------------------------------------+       +---------------------------------------------+  |  |
+|  +-------------------------------------------------------------------------------------------------+  |
+|                         /                                                   \                         |
+|                        v                                                     v                        |
+|  +-----------------------------------------+      +------------------------------------------------+  |
+|  |       IMMUTABLE CAS OBJECT STORE        |      |       RELATIONAL ENTITY & GRAPH ENGINE         |  |
+|  |       (Blobs by Content Digest)         |      |                 (PostgreSQL)                   |  |
+|  |                                         |      |                                                |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  | Standalone Artifact Blobs         |  |      |  | Registry Entities (Artifacts & Bundles)  |  |  |
+|  |  | (Specs, Lifecycles, Workflows)    |  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  | Bundle Aggregation Membership Table      |  |  |
+|  |  | Bundle Aggregator Manifest Blobs  |  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  | Universal Lineage Graph Edge Table       |  |  |
+|  |  | Replay & Audit Execution Trace Logs|  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |                                         |      |  | Transactional Outbox Event Table         |  |  |
+|  |                                         |      |  +------------------------------------------+  |  |
+|  +-----------------------------------------+      +------------------------------------------------+  |
+|                        \                                                   /                          |
+|                         v                                                 v                           |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                          REPROCESSING & IMPACT ANALYSIS QUERY ENGINE                            |  |
+|  |     (Traverses Lineage Graph to Trigger Downstream Re-generation via Temporal Workflows)        |  |
+|  +-------------------------------------------------------------------------------------------------+  |
++-------------------------------------------------------------------------------------------------------+
+                                                    |
+                                                    v
+                                    [ TO STEP 1: EVENT BUS / TEMPORAL ]
+
+```
+
+---
+
+#### **1. Storage Mechanics & Engine Sub-Components**
+
+* **Two-Phase Ingestion & Atomic Commit Engine:**
+1. *Phase 1 (Storage Isolation):* Writes inline raw artifacts to Content Addressable Storage (CAS) under `sha256(content)` keys.
+2. *Phase 2 (DB Transaction):* In a single PostgreSQL transaction block:
+* Inserts artifact records into `bcr_entities`.
+* Validates and records bundle links in `bcr_bundle_memberships`.
+* Writes event payload to `bcr_outbox` for async relay to Kafka/EventBridge.
+
+
+
+
+* **Transactional Outbox Publisher:** Asynchronous background worker polling `bcr_outbox` with `SELECT ... FOR UPDATE SKIP LOCKED` to publish lifecycle events to Kafka with zero data loss.
+* **Reprocessing & Lineage Engine:** Executes recursive Graph queries (using PostgreSQL Common Table Expressions) over `bcr_lineage_edges` to identify all dependent bundles and generated artifacts impacted by a blueprint update or deprecation.
+
+---
+
+#### **2. Concrete Interfaces & Payload Shapes**
+
+##### **A. PostgreSQL Database Schema (Including Outbox & Version Locks)**
+
+```sql
+-- 1. Entity Registry (Artifacts and Bundles)
+CREATE TABLE bcr_entities (
+    entity_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    urn VARCHAR(512) UNIQUE NOT NULL,
+    entity_type VARCHAR(32) NOT NULL,       -- 'ARTIFACT' or 'BUNDLE'
+    artifact_category VARCHAR(64),          -- 'SPEC', 'LIFECYCLE', 'WORKFLOW', 'METADATA'
+    semver VARCHAR(64) NOT NULL,
+    lifecycle_state VARCHAR(32) NOT NULL,    -- 'DRAFT', 'ACTIVE', 'DEPRECATED', 'ROLLBACK_SUPERSEDED'
+    content_sha256 CHAR(64) NOT NULL,        -- CAS Blob Key
+    version_lock INT NOT NULL DEFAULT 1,     -- Optimistic Locking Control
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(128) NOT NULL
+);
+
+-- 2. Bundle Memberships (Aggregation Mapping)
+CREATE TABLE bcr_bundle_memberships (
+    membership_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bundle_urn VARCHAR(512) NOT NULL REFERENCES bcr_entities(urn) ON DELETE CASCADE,
+    member_urn VARCHAR(512) NOT NULL REFERENCES bcr_entities(urn) ON DELETE RESTRICT,
+    member_alias VARCHAR(128) NOT NULL,
+    source_origin VARCHAR(32) NOT NULL,      -- 'INLINE_NEW' or 'PRE_EXISTING_REFERENCE'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(bundle_urn, member_urn)
+);
+
+-- 3. Universal Lineage Graph Edges
+CREATE TABLE bcr_lineage_edges (
+    edge_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_urn VARCHAR(512) NOT NULL,
+    target_urn VARCHAR(512) NOT NULL,
+    edge_type VARCHAR(64) NOT NULL,          -- 'EXTENDS', 'DEPENDS_ON', 'PRODUCED_ARTIFACT'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4. Transactional Outbox Table for Reliable Async Messaging
+CREATE TABLE bcr_outbox (
+    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type VARCHAR(64) NOT NULL,     -- 'BUNDLE', 'ARTIFACT'
+    aggregate_urn VARCHAR(512) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,         -- 'ENTITY_PUBLISHED', 'LIFECYCLE_CHANGED'
+    payload JSONB NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'PROCESSED', 'FAILED'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_outbox_status_created ON bcr_outbox(status, created_at);
+CREATE INDEX idx_lineage_graph ON bcr_lineage_edges(source_urn, target_urn);
+
+```
+
+##### **B. Impact Analysis Query Response (`POST /v1/internal/reprocessing/impact-analysis`)**
+
+```json
+{
+  "target_urn": "urn:meta:bcr:telecom:blueprints:Order:v1.0.0",
+  "action": "DEPRECATE",
+  "impact_summary": {
+    "affected_bundles_count": 2,
+    "affected_generated_artifacts_count": 12
+  },
+  "lineage_tree": [
+    {
+      "bundle_urn": "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0",
+      "relationship": "DIRECT_DEPENDENT",
+      "downstream_generated_artifacts": [
+        "urn:meta:bcr:provider:midwest:generated:java:OrderService:v1.0.0",
+        "urn:meta:bcr:provider:midwest:generated:openapi:OrderAPI:v1.0.0"
+      ]
+    }
+  ],
+  "recommended_reprocessing_plan": {
+    "trigger_temporal_workflow": "wf_batch_recompile_bundles",
+    "target_bundles": [
+      "urn:meta:bcr:provider:midwest:bundles:OrderModule:v1.0.0"
+    ]
+  }
+}
+
+```
+
+---
+
+#### **3. Edge Cases, Failure Modes, and Performance Trade-offs**
+
+| Category | Scenario / Failure Mode | Mitigation & Architectural Handling |
+| --- | --- | --- |
+| **Edge Case** | **Uncommitted CAS Blobs (Orphaned Storage):** CAS writes succeed in Phase 1, but Phase 2 DB transaction fails or aborts due to validation errors. | **Asynchronous CAS Garbage Collection:** CAS blobs are tagged with a 24-hour expiration metadata flag upon initial write. When Phase 2 DB commit succeeds, the `bcr_entities` row references the SHA-256 key and clears the expiration tag. Unreferenced blobs are purged by a daily GC job. |
+| **Failure Mode** | **Outbox Relay Backpressure / Duplicate Events:** Event bus worker crashes mid-batch, causing event relay retries to publish duplicate lifecycle events to Kafka. | **Idempotent Consumer Pattern:** Outbox message payload carries a unique `event_id` and global sequence key. Downstream generation workers maintain an idempotent state buffer to drop duplicate events safely. |
+| **Trade-Off** | **Deep Lineage Graph Traversal vs. DB Performance:** Traversing recursive lineage graphs across thousands of generated artifacts during hot impact analysis queries. | **Decision:** **Indexed Lineage Edges + Materialized Lineage Views.** DB updates write direct edges synchronously, while an asynchronous trigger updates a materialized lineage path view for $O(1)$ impact lookup times. |
+
+---
+
+We have now reviewed, identified gaps across all sections, and updated the solution architecture across all three planes:
+
+1. **Step 1: Outside the System (Ecosystem & Access)**
+2. **Step 2: System Boundary (Contracts & Feedback)**
+3. **Step 3: Inside the System (State, Reprocessing & Engine Mechanics)**
+

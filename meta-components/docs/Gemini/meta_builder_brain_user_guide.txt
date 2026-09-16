@@ -1,0 +1,178 @@
+The `meta_builder_brain` library is a framework designed for domain specification ingestion, multi-pass AI schema synthesis, hierarchical namespace resolution, Open Policy Agent (OPA) policy enforcement, and dynamic SQLAlchemy ORM dynamic compilation.
+
+**Core Architecture & Class Responsibilities**
+
+| Module Path | Primary Classes / Entrypoints | Responsibilities & Behavior |
+| --- | --- | --- |
+| `meta_builder_brain.config` | `Settings`<br> | Manages environment configurations (`DATABASE_URL`, `OPA_URL`, `CACHE_TTL_SECONDS`) and dynamically pulls runtime secrets (`ANTHROPIC_API_KEY`, `QWEN_API_KEY`) from OpenBao HTTP endpoints.
+
+ |
+| `meta_builder_brain.ingestion` | `SchemaParser`, `DocumentParser`, `WebScraperPool`, `inspect_and_generate_spec`<br> | Extracts unstructured documents (PyMuPDF/Docling), parses OpenAPI/JSON Schemas into AST property graphs, scrapes web specs via Playwright, and auto-generates Pydantic models.
+
+ |
+| `meta_builder_brain.synthesis` | `MetaBrainSynthesizer`, `HermesSynthesisAgent`, `LLMClient`, `mcp_server`<br> | Orchestrates two-pass LLM prompts (Pass-1 entity extraction via Qwen/Gemma, Pass-2 FSM synthesis via Claude), manages Pydantic repair loops, and exposes FastMCP agent tools.
+
+ |
+| `meta_builder_brain.namespace` | `TreeResolver`, `CacheGuard`, `FallbackChainResolver`<br> | Executes PostgreSQL recursive CTE queries to traverse child-to-root ancestor chains, provides thread-safe TTL caching, and enforces pairwise FSM inheritance rules.
+
+ |
+| `meta_builder_brain.validation` | `OPAEvaluator`, `SynthesisRetryLoop`, `NamespaceManifest`<br> | Validates strict Pydantic meta-models, executes automated synthesis repair loops on validation failure, and posts input payloads to local OPA sidecars.
+
+ |
+| `meta_builder_brain.compiler` | `DynamicMetaclassBuilder`, `NamespaceManifestModel`, `AsyncSessionFactory`<br> | Traverses merged lineage manifests from root to custom overrides and dynamically generates executable SQLAlchemy ORM classes via Python `type()` metaclasses.
+
+ |
+
+---
+
+**System Runtime Initialization & Configuration**
+
+Before executing synthesis or namespace operations, initialize the runtime configuration and provision database tables.
+
+* **Environment Settings**: Set `DATABASE_URL`, `OPA_URL`, `OPENBAO_ADDR`, and `OPENBAO_TOKEN` via standard environment variables or a `.env` file.
+
+
+* **Secret Provisioning**: Execute `settings.load_secrets_from_openbao()` asynchronously at application startup to fetch secrets from the OpenBao path (`OPENBAO_SECRET_PATH`).
+
+
+* **Database Engine**: Call `init_db()` to provision the `namespace_manifests` and `schema_revisions` tables using the configured async PostgreSQL engine.
+
+
+
+```python
+from meta_builder_brain.config.settings import settings
+from meta_builder_brain.compiler.store import init_db, AsyncSessionFactory
+
+async def setup_runtime():
+    # 1. Fetch API keys and DB credentials from OpenBao
+    await settings.load_secrets_from_openbao()
+
+    # 2. Provision persistent manifest tables in PostgreSQL
+    await init_db()
+
+```
+
+---
+
+**Core Integration Modules & Developer Interfaces**
+
+**1. Ingestion & Schema Parsing**
+Developers can convert raw JSON Schemas, OpenAPI specifications, or unstructured files into normalized abstract syntax tree (AST) property graphs:
+
+* `SchemaParser().parse_to_ast(raw_schema)`: Accepts a JSON string, YAML string, or dictionary and returns a `PropertyGraph` containing AST nodes and attributes.
+
+
+* `DocumentParser().parse_pdf_pymupdf(file_path)`: Performs fast unstructured text extraction returning page blocks.
+
+
+* `DocumentParser().parse_document_docling(file_path)`: Performs layout-aware parsing and exports documents directly to Markdown.
+
+
+* `inspect_and_generate_spec(input_path, output_dir)`: Inspects specs, detects schema types (`SpecKind.OPENAPI`, `SpecKind.JSON_SCHEMA`, `SpecKind.UNSTRUCTURED`), and compiles Pydantic models using `datamodel-code-generator`.
+
+
+
+**2. Two-Pass Domain Synthesis (`MetaBrainSynthesizer` & `HermesSynthesisAgent`)**
+To synthesize domain text or specs into canonical `NamespaceManifest` models:
+
+```python
+from pathlib import Path
+from meta_builder_brain.synthesis.agent import MetaBrainSynthesizer, HermesSynthesisAgent
+
+# High-Level Facade Integration
+synthesizer = MetaBrainSynthesizer()
+manifest, generated_types_path = await synthesizer.synthesize_spec(
+    spec_path=Path("./specs/fintech_v1.md"),
+    spec_name="fintech_custom",
+    output_dir=Path("./output"),
+    tenant_id="tenant_123",
+    tier="custom"
+)
+
+# Direct Agent Execution with Parent Context Alignment
+agent = HermesSynthesisAgent()
+manifest = await agent.run(
+    specification_text="Define an Account with balance and status fields...",
+    namespace_id="tenant_account_v2",
+    tenant_id="tenant_123",
+    tier="custom",
+    parent_manifest=parent_namespace_manifest # Enforces parent immutable invariant matching[cite: 15]
+)
+
+```
+
+**3. Hierarchical Resolution & OPA Policy Enforcement**
+Namespaces inherit structural schemas and FSM transitions from ancestor tiers (`global` -> `industry` -> `custom`). The `FallbackChainResolver` manages caching, recursive database lookups, and Rego invariant evaluation:
+
+```python
+from meta_builder_brain.core.types import ResolutionContext
+from meta_builder_brain.namespace.fallback_chain import FallbackChainResolver
+
+context = ResolutionContext(
+    tenant_id="tenant_123",
+    industry_domain="fintech",
+    custom_namespace="tenant_account_v2"
+)
+
+resolver = FallbackChainResolver()
+resolution_path, lineage_manifests = await resolver.resolve_and_validate(
+    context=context,
+    target_namespace_id="tenant_account_v2"
+)
+# Returns an ordered list of NamespaceManifestModel instances ordered from Child down to Root[cite: 15].
+
+```
+
+**4. Metaclass Dynamic ORM Compilation**
+Pass the resolved lineage manifest models to `DynamicMetaclassBuilder` to dynamically create SQLAlchemy models at runtime. Attributes from child manifests overlay parent attributes, and data types are mapped via `TYPE_MAP`:
+
+```python
+from meta_builder_brain.compiler.metaclass_builder import DynamicMetaclassBuilder
+from sqlalchemy.ext.asyncio import AsyncSession
+
+compiler = DynamicMetaclassBuilder()
+compiled_orm_registry = compiler.compile_orm_models(lineage_manifests)
+
+# Access dynamically constructed SQLAlchemy ORM models
+AccountModel = compiled_orm_registry["Account"]
+
+# Model fields are populated and mapped to PostgreSQL column types dynamically[cite: 15]
+async with AsyncSession(engine) as session:
+    new_account = AccountModel(id="acc_001", balance=2500.50)
+    session.add(new_account)
+    await session.commit()
+
+```
+
+---
+
+**REST API Gateway Endpoints**
+
+The FastAPI application mounts the ingestion gateway router under `/api/v1`.
+
+* `POST /api/v1/gateway/ingest/raw`: Ingests raw JSON Schema/OpenAPI AST payloads, creates a `NamespaceManifest`, and stores it in PostgreSQL (`NamespaceManifestModel`).
+
+
+* `POST /api/v1/gateway/ingest/openapi`: Schedules an asynchronous Playwright web scraping job via `WebScraperPool` to fetch remote OpenAPI endpoints.
+
+
+* `POST /api/v1/gateway/ingest/rfc`: Submits raw specification text directly to `HermesSynthesisAgent` for two-pass LLM schema synthesis.
+
+
+* `POST /api/v1/gateway/compile/{namespace_id}`: Resolves ancestor lineage using `FallbackChainResolver` and compiles dynamic ORM table names via `DynamicMetaclassBuilder`.
+
+
+
+---
+
+**FastMCP Tool Primitives for AI Agents**
+
+The `mcp_server` module exports `FastMCP` tools for agent workflows:
+
+* `get_global_schema(entity_name: Optional[str])`: Queries PostgreSQL for base entity schemas defined under the `global` tier.
+
+
+* `get_tenant_manifest(tenant_id: str, namespace_id: str)`: Inspects active manifest revisions for a specific tenant.
+
+
+* `list_available_namespaces(tenant_id: str)`: Lists available parent and ancestor namespace records accessible to a given tenant.

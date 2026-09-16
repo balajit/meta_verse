@@ -1,0 +1,74 @@
+Understood completely. That is a crucial distinction, and I hear you.
+
+Taking BCR out of the system orchestrator role changes the picture fundamentally: **`meta_builder` is the complete functional library—the engine that accepts specifications, orchestrates pipelines, validates governance, and emits generated application code**. **BCR is the dynamic context-aware digital shelf**—it provides storage, state management, URN resolution, and immutable artifact lookup, but it **never** owns the execution, validation engine, or user-facing builder workflows.
+
+Here is the refactored **System Boundary Plane** where `meta_builder` owns the end-to-end management pipeline (from specification to generation) and treats BCR strictly as a document registry and intelligence layer.
+
+```
++-----------------------------------------------------------------------------------------------------------------+
+|                                APPLICATION BUILDER ENGINE (meta_builder)                                        |
+|                                                                                                                 |
+|   [ Inbound Specification / CLI Request ]                                                                       |
+|                     |                                                                                           |
+|                     v                                                                                           |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|   |                                 1. SPECIFICATION MANAGEMENT INTERFACE                                   |   |
+|   |         (Ingests Raw Provider Specs / Merges Deltas / Orchestrates Build Pipeline Workflow)            |   |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|                     |                                                                                           |
+|                     v                                                                                           |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|   |                                 2. HYBRID GOVERNANCE & VALIDATION ENGINE                                |   |
+|   |       (Executes Immutability Tier Rules [FINAL/OVERRIDABLE], Schema Linters, Topological Graph Checks)   |   |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|                     |                                                    ^                                      |
+|                     | (Fetch Base Blueprints & URN ASTs)                 | (Return Stored Artifacts)            |
+|                     v                                                    |                                      |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|   |                              3. BLUEPRINT COMPONENT REGISTRY (BCR)                                      |   |
+|   |                         [ DIGITAL SHELVES & DYNAMIC RESOLUTION LAYER ]                                  |   |
+|   |      * URN Lookup & Versioning         * Content Addressing (CAS)       * State Machine (DRAFT/ACTIVE)  |   |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|                     |                                                                                           |
+|                     v                                                                                           |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|   |                                 4. APPLICATION COMPONENT GENERATOR                                      |   |
+|   |   (Synthesizes Pydantic Domain Models, Async Database Schemas, Dual-Track FSM/Temporal Code Artifacts)  |   |
+|   +---------------------------------------------------------------------------------------------------------+   |
+|                     |                                                                                           |
+|                     v                                                                                           |
+|   [ Outbound Application Code & Runtime Bundles ]                                                               |   |
++-----------------------------------------------------------------------------------------------------------------+
+
+```
+
+---
+
+### Key Architectural Shifts
+
+* **`meta_builder` Owns the Workflow:** The Application Builder provides the unified API and interfaces for developers. It handles request intake, governs build states, and produces generated application components.
+
+
+* **BCR as the Passive/Intelligent Storage Sub-component:** BCR exposes atomic registry APIs (`store`, `resolve`, `fetch_by_urn`, `update_lifecycle`). `meta_builder` queries BCR to retrieve standard base blueprints (e.g., global or industry templates), calculates the resolved AST within its own engine, and pushes final registered bundle metadata back to BCR for safe keeping.
+
+
+* **Validation Resides in the Engine:** The logic enforcing domain governance (such as ensuring a Provider delta doesn't override a `FINAL` immutable attribute) runs inside `meta_builder`’s validation engine during the pipeline execution.
+
+
+
+---
+
+### Step 3 Target: Internal Storage Plane Architecture
+
+With BCR established strictly as the dynamic storage registry, we can now dive into **Step 3: Internal Storage Plane Architecture**.
+
+To design the database and persistence layer for BCR, how would you like to model artifact storage?
+
+1. **Relational + CAS (Content-Addressed Storage):** A PostgreSQL database storing structural metadata, URN relationships, version records, and lifecycle states, paired with an S3-compatible content-addressable store (keyed by SHA-256 hashes) for payload blobs.
+
+
+2. **Unified Relational Model:** Storing both artifact metadata and JSON payloads directly inside PostgreSQL using JSONB columns.
+
+
+
+Let me know which direction aligns best with your storage requirements, and we will map out the complete schema and persistence layout.

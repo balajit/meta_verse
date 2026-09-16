@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+import logging
+from unittest.mock import AsyncMock
+
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from {{ package_name }}.database import engine
+from {{ package_name }}.extensions.policy import PolicyGuard, get_policy_guard
+from {{ package_name }}.main import create_app
+from {{ package_name }}.models.base import Base
+
+{% for model in models %}
+from {{ package_name }}.models.{{ model.name | snake_case }}_orm import {{ model.class_name }}ORM
+{% endfor %}
+
+logger = logging.getLogger(__name__)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def setup_database() -> AsyncIterator[None]:
+    """Initialize database tables before test execution and drop them upon completion [source: 7]."""
+    logger.info("Disposing pre-existing connection pool state for active event loop")
+    await engine.dispose()
+
+    logger.info("Creating database tables for test session")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        yield
+    except Exception as exc:
+        logger.exception("Database table creation failed during test setup: %s", exc)
+        raise
+    finally:
+        logger.info("Dropping database tables post-test session")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+        except Exception as exc:
+            logger.exception("Failed to drop database tables during test teardown: %s", exc)
+        finally:
+            await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def async_client() -> AsyncIterator[AsyncClient]:
+    """HTTPX client bound directly to the generated ASGI application with policy checks mocked [source: 7]."""
+
+    app = create_app()
+
+    # Bypasses PolicyGuard authorization checks during test executions
+    mock_policy_guard = AsyncMock(spec=PolicyGuard)
+    mock_policy_guard.enforce.return_value = None
+    app.dependency_overrides[get_policy_guard] = lambda: mock_policy_guard
+
+    transport = ASGITransport(app=app)
+
+    logger.info("Initializing HTTPX async test client lifespan context")
+    try:
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                yield client
+    except Exception as exc:
+        logger.exception("An error occurred during ASGI application test client lifecycle: %s", exc)
+        raise
+    finally:
+        logger.info("Closed HTTPX async test client context")
+        app.dependency_overrides.clear()

@@ -1,0 +1,10 @@
+import logging
+from meta_context import get_correlation_id, get_tenant_context
+
+class ContextLogFilter(logging.Filter):
+    """Enriches standard log records with active context state."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.correlation_id = get_correlation_id()
+        tenant = get_tenant_context()
+        record.tenant_id = tenant.tenant_id if tenant else None
+        return True

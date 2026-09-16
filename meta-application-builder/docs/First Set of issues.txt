@@ -1,0 +1,71 @@
+Registry Persistence Immutability
+
+    Module: Blueprint Component Registry (bcr) / Storage Engine
+
+    Qualified File Names: bcr/models/registry.py, db/migrations/versions/xxxx_enforce_registry_immutability.py, db/triggers/immutability_triggers.sql
+
+    Severity: Critical
+
+    Issue: Standard TenantAwareMixin mutations (e.g., updating updated_at or modifying published rows) allow published schema records to be modified or deleted post-publication, destroying audit trails, breaking build reproducibility, and invalidating cache determinism.
+
+    Design / Solution / Code Fix:
+
+        Model Refactoring: Update bcr/models/registry.py to inherit from an append-only base model, removing TenantAwareMixin update semantics and strictly enforcing (registry_id, revision_id, schema_version, content_digest, published_at, published_by, parent_revision_id).
+
+        PostgreSQL Trigger: Write a PL/pgSQL function and trigger in immutability_triggers.sql targeting BEFORE UPDATE OR DELETE to raise an exception (RAISE EXCEPTION 'Published revisions are immutable') whenever status = 'PUBLISHED'.
+
+        Database Migration: Create xxxx_enforce_registry_immutability.py to bind the immutability trigger directly to the registry_revisions table.
+
+2. URN Compatibility Engine
+
+    Module: Governance & Contract Validation (bcr.governance)
+
+    Qualified File Names: bcr/urn_parser.py, bcr/governance/compatibility_checker.py, meta_compiler/contracts/contract_checker.py
+
+    Severity: High
+
+    Issue: Lack of automated structural AST diffing allows breaking schema modifications to be published under patch or minor SemVer increments, causing downstream runtime deserialization failures and contract breakages.
+
+    Design / Solution / Code Fix:
+
+        AST Diff Engine: Implement structural AST comparison logic in compatibility_checker.py that evaluates candidate schemas against target parent_revision_id schemas.
+
+        SemVer Classification: Categorize schema changes into explicit categories: BACKWARD_COMPATIBLE (patch/minor), FORWARD_COMPATIBLE (minor), or BREAKING (major).
+
+        Enforcement Gate: Integrate validation hooks into urn_parser.py and contract_checker.py to compare the declared SemVer bump against the calculated classification. Reject non-compliant publications with a SemVerMismatchException (HTTP 422) if the bump is invalid or lacks migration metadata.
+
+3. Atomic Dependency Snapshotting
+
+    Module: Meta-Compiler Orchestration & Resolution (meta_compiler, bcr.resolver)
+
+    Qualified File Names: meta_compiler/orchestrator.py, bcr/dependency_resolver.py, bcr/models/build_job.py
+
+    Severity: High
+
+    Issue: Resolving graph dependencies dynamically during multi-phase builds exposes pipelines to race conditions where upstream dependency updates mid-build result in non-deterministic or unrepeatable artifact generation.
+
+    Design / Solution / Code Fix:
+
+        Immutable Version Vector: Enhance bcr/dependency_resolver.py to lock all transitive dependencies into a single, immutable version vector (URN + content_digest + revision_id) at build initiation.
+
+        Build Job Binding: Persist pinned_dependencies directly in bcr/models/build_job.py upon job creation.
+
+        Pre-Commit Guard: Add a pre-publication check in meta_compiler/orchestrator.py that verifies active upstream content_digest values against the pinned snapshot vector, aborting execution if drift occurs prior to atomic publication commit.
+
+4. Transitive Closure & Topological Consistency
+
+    Module: Lineage & Graph Service (bcr.lineage)
+
+    Qualified File Names: bcr/lineage/closure_builder.py, bcr/models/lineage.py, db/migrations/versions/xxxx_lineage_closure.py
+
+    Severity: Medium
+
+    Issue: Modifying transitive closure tables in-place during concurrent graph updates causes transactional contention, DB lock degradation, and potential dirty reads for ongoing dependency queries.
+
+    Design / Solution / Code Fix:
+
+        Generation Snapshot Schema: Redesign bcr/models/lineage.py to bind closure records strictly to explicit revision_id entities and generation iteration IDs.
+
+        Out-of-Band Staging: Update closure_builder.py to compute full graph transitive closures out-of-band in isolated staging buffers or temporary generation schemas.
+
+        Atomic Pointer Swap: Execute atomic table renames or single-transaction generation pointer updates in xxxx_lineage_closure.py to guarantee non-blocking, isolated graph reads for concurrent operations.

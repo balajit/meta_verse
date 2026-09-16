@@ -1,0 +1,608 @@
+I acknowledge my role as **Principal System Architect**. We will design the Blueprint & Component Registry (BCR) as a passive, authoritative storage and lineage library. It stores inputs, blueprints, components, and generated artifact references, while exposing clean interfaces for external processors (`meta_*`) to read metadata and attach structural lineage. It plays **no active role** in executing the generation pipelines themselves.
+
+Here is **Step 1: Outside the System (Ecosystem & Access)**.
+
+---
+
+### **Step 1: Outside the System (Ecosystem & Access)**
+
+```
+                                      [ OUTSIDE THE SYSTEM ]
+
+  +--------------------------+        +---------------------------+        +---------------------------+
+  |   Industry Specialist    |        |    Provider Developer     |        |   CI/CD Pipeline Runner   |
+  | (Global/Industry Spec)   |        |  (Minimal Delta Spec)     |        |  (Automated Build/Deploy) |
+  +------------+-------------+        +-------------+-------------+        +-------------+-------------+
+               |                                    |                                    |
+               | Push Blueprints                    | Push Delta Specs                   | Query & Link Artifacts
+               v                                    v                                    v
+  +------------------------------------------------------------------------------------------------+
+  |                                     BCR ACCESS GATEWAY / API                                   |
+  +------------------------------------------------------------------------------------------------+
+                                       /            |            \
+                                      /             |             \
+              +----------------------+              |              +-----------------------+
+              | 1. Read Inputs & Specs              | 2. Persist   | 3. Register Lineage   |
+              v                                     v              v                       v
+  +---------------------------+  +------------------+---------+  +-------------------------+
+  |  External Processing      |  | Physical Persistence Store |  | Distributed Observability|
+  |  Pipelines (meta_*)       |  | (PostgreSQL / S3 Blob Store|  | (OpenTelemetry / Jaeger /|
+  |  - meta_builder_brain     |  |  for Versioned Specs)    |  |  AWS X-Ray)             |
+  |  - meta_polymorph         |  +----------------------------+  +-------------------------+
+  |  - meta_compiler          |
+  +-------------+-------------+
+                |
+                | Emits Code & Workflows
+                v
+  +-------------+-------------+
+  | External Execution Target |
+  | (Temporal Workers & DBs)  |
+  +---------------------------+
+
+```
+
+---
+
+#### **1. Persona Workflows & Access Patterns**
+
+##### **Persona A: Industry Domain Specialist (Blueprint Author)**
+
+* **Role:** Defines standard blueprints (e.g., `urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0`).
+* **Workflow:**
+1. Authors industry-wide entity structures and base lifecycles in local YAML/JSON files.
+2. Runs `meta_builder bcr publish --file industry_subscriber.yaml` via CLI.
+3. The BCR API verifies the URN namespace, persists the blueprint, and assigns an immutable content digest (SHA-256).
+
+
+
+##### **Persona B: Provider Developer (Application Spec Author)**
+
+* **Role:** Authors minimal application delta specs targeting specific enterprise deployment needs.
+* **Workflow:**
+1. Searches BCR for existing components: `meta_builder bcr search --domain telecom`.
+2. Inspects blueprint definitions: `meta_builder bcr inspect urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0`.
+3. Pushes minimal delta input: `meta_builder bcr submit-spec --file provider_subscriber.yaml`.
+4. Receives a unique `spec_input_id` to pass to downstream compilation pipelines.
+
+
+
+##### **Persona C: External Processing Engines (`meta_*` Pipeline)**
+
+* **Role:** Independent processing pipelines that read inputs from BCR, perform inflation/compilation, and write generated artifact references back to BCR to establish lineage.
+* **Workflow:**
+1. `meta_builder_brain` fetches minimal spec + parent blueprint URNs via `GET /v1/registry/artifacts/{urn}`.
+2. Pipeline completes compilation out-of-band.
+3. `meta_compiler` registers final compiled code metadata back to BCR via `POST /v1/registry/lineage` to bind `[Minimal Input Spec + Blueprint URNs] ---> [Generated Code Artifact Manifest]`.
+
+
+
+---
+
+#### **2. External Integration Interfaces**
+
+##### **A. Observability & Structural Lineage Binding (OpenTelemetry / X-Ray)**
+
+To ensure every piece of code in production can be traced back to its exact inputs:
+
+* BCR generates a unique `lineage_tree_id` linking inputs, blueprints, overrides, and final emitted code digests.
+* W3C Trace Context (`traceparent`) is attached to all BCR lineage records, allowing Observability platforms (Jaeger, AWS X-Ray) to correlate pipeline triage logs directly to stored spec URNs.
+
+##### **B. External Workflow Systems (Temporal.io)**
+
+* BCR stores Temporal workflow blueprint definitions (`execution_mode: Workflow`) as declarative specs.
+* External Temporal workers read runtime parameters and state-transition rules from BCR endpoints using immutable versioned URNs.
+
+---
+
+#### **3. Payload Shapes & Interfaces**
+
+##### **Inbound Payload: Publishing a Minimal Provider Spec (`POST /v1/registry/specs`)**
+
+```json
+{
+  "spec_id": "spec_comcast_sub_00912",
+  "namespace": "Provider.Comcast.UserManagement",
+  "extends_urn": "urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0",
+  "author": "dev-team-chicago@comcast.com",
+  "delta_input": {
+    "attributes": {
+      "account_status": {
+        "type": "Choice(Active, Suspended, Disconnected)",
+        "override_justification": "Local status requirements for Midwest region"
+      }
+    },
+    "relationships": {
+      "service_address": {
+        "link": "urn:meta:bcr:telecom:components:ServiceableLocation:v1.0.0",
+        "lifecycle": "Independent"
+      }
+    }
+  }
+}
+
+```
+
+##### **Outbound Lineage Binding Payload: Registering Compiled Artifact Lineage (`POST /v1/registry/lineage`)**
+
+```json
+{
+  "lineage_id": "lin_882091_abc",
+  "input_spec_id": "spec_comcast_sub_00912",
+  "blueprint_urns_used": [
+    "urn:meta:bcr:telecom:blueprints:Subscriber:v1.0.0",
+    "urn:meta:bcr:telecom:components:ServiceableLocation:v1.0.0"
+  ],
+  "generated_artifacts": [
+    {
+      "artifact_type": "PythonServiceModule",
+      "file_path": "services/subscriber_service.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact_type": "TemporalWorkflowDefinition",
+      "file_path": "workflows/disconnect_workflow.py",
+      "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+    }
+  ],
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+  }
+}
+
+```
+
+---
+
+#### **4. Edge Cases, Failure Modes, and Trade-offs**
+
+| Category | Issue / Scenario | Mitigation / Architectural Handling |
+| --- | --- | --- |
+| **Edge Case** | **Dangling Lineage Link:** Processing pipeline generates artifacts but crashes before posting lineage back to BCR. | **Unverified State Marker:** Input specs remain in a `Pending_Compilation` state until lineage registration completes. Unlinked generated code is flagged during CI/CD audit scans. |
+| **Failure Mode** | **Registry Unavailability During External Pipeline Execution:** `meta_*` engines cannot fetch blueprint dependencies while compiling. | **Local Mirror & Cache Layer:** CLI and build agents maintain an immutable local disk cache (`~/.bcr/cache/`) keyed by URN SHA-256 hashes, allowing offline compilation. |
+| **Trade-Off** | **Passive Lineage Repository vs. Active Process Orchestrator:** BCR only stores relationships and artifacts; it does not trigger compilation or run workflows. | **Decision:** Passive storage guarantees high availability and zero processing side-effects, keeping the registry isolated from pipeline crashes or infinite compilation loops. |
+
+---
+
+Please review **Step 1: Outside the System**. Once approved, we will proceed to **Step 2: System Boundary (Contracts & Feedback)**.
+
+---
+Step 2
+I acknowledge my role as **Principal System Architect**.
+
+### **Architectural Critique & Delta Analysis**
+
+Your new feedback introduces two essential requirements for a high-governance metadata library:
+
+1. **Seamless Rollback / Undo Mechanics:** Ability to revert or retract a spec/blueprint version cleanly across structural dependencies without breaking immutable content-addressing principles.
+2. **Roadmap / Draft / Future-State Scoping:** Support for authoring future-state specifications, draft components, and roadmap capabilities within the registry that are strictly hidden from active downstream processing engines (`meta_compiler`, code generators).
+
+#### **Critique of Prior Iteration vs. New Requirements:**
+
+* **Rigid Immutability vs. Operable Rollbacks:** Pure append-only immutability without state flags makes "undoing" awkward (forcing authors to manually publish a new forward version with old content). We need explicit **Lifecycle States** (`DRAFT`, `ACTIVE`, `DEPRECATED`, `ROLLBACK_SUPERSEDED`, `ROADMAP_ONLY`) enforced strictly at the boundary.
+* **Lack of Visibility Filters:** Downstream processors reading components via APIs had no perimeter filter distinguishing production-ready specs from speculative/future-state design blocks.
+
+Below is the complete, revised **Step 2: System Boundary (Contracts & Feedback)** incorporating **Lifecycles, Rollback Mechanics, and Roadmap Visibility Boundary Gates**.
+
+---
+
+### **Step 2: System Boundary (Contracts & Feedback) — Redesigned**
+
+```
+                                      [ SYSTEM BOUNDARY PERIMETER ]
+
+  Inbound Specs, Rollback Commands,                     Active Blueprint Releases, Dry-Run Feedback,
+  & Roadmap Draft Submissions                           & Structural Audit Certificates
+             |                                                                 ^
+             v                                                                 |
+  +------------------------------------------------------------------------------------------------+
+  |                                 BCR BOUNDARY API GATEWAY                                       |
+  +------------------------------------------------------------------------------------------------+
+             |                                                                 ^
+             v                                                                 |
+  +------------------------------------------------------------------------------------------------+
+  |                                BOUNDARY INTEGRITY & GOVERNANCE PIPELINE                        |
+  |                                                                                                |
+  |  +--------------------------+   +--------------------------+   +----------------------------+  |
+  |  | 1. URN & Version Parser  |-->| 2. Lifecycle State &     |-->| 3. Pre-Gen Impact          |  |
+  |  |    + Visibility Context  |   |    Roadmap Gatekeeper    |   |    & Dry-Run Feedback Engine|  |
+  |  +--------------------------+   +--------------------------+   +----------------------------+  |
+  |                                                                               |                |
+  |                                                                               v                |
+  |                                 +-----------------------------------------------------------+  |
+  |                                 | 4. Lineage Rollback & Provenance Audit Ledger             |  |
+  |                                 |    (Binds SHA-256 Digest, Rollback Pointer, & State)    |  |
+  |                                 +-----------------------------------------------------------+  |
+  +------------------------------------------------------------------------------------------------+
+                                                                               |
+                                                                               v
+                                                                +------------------------------+
+                                                                |  INSIDE THE SYSTEM (Step 3)  |
+                                                                | (Immutable State & Storage)  |
+                                                                +------------------------------+
+
+```
+
+---
+
+#### **1. Boundary Functional Sub-Components & Processing Layers**
+
+##### **Layer 1: URN, Version, & Visibility Context Parser**
+
+Enforces URN taxonomy while extracting lifecycle metadata and client access scope:
+
+* **Canonical URN Schema:**
+`urn:meta:bcr:<tier>:<domain>:<type>:<entity_name>:<semver>`
+* **Visibility Scope Control:**
+* `processing` client scope: Boundary strictly filters out `DRAFT`, `ROADMAP_ONLY`, and `ROLLBACK_SUPERSEDED` records.
+* `authoring` client scope: Accesses all states, including future roadmap blueprints.
+
+
+
+##### **Layer 2: Lifecycle State & Roadmap Gatekeeper**
+
+Manages state transitions and shields processing engines from non-production artifacts:
+
+* **Lifecycle State Matrix:**
+* `DRAFT` / `ROADMAP_ONLY`: Future state specs. Stored, validated, and navigable by authors, but blocked from production generators.
+* `ACTIVE`: Fully validated, immutable, and eligible for generation pipelines.
+* `DEPRECATED`: Active but flagged for phase-out; triggers warnings during pre-generation evaluation.
+* `ROLLBACK_SUPERSEDED`: Inactive state assigned when a version has been rolled back.
+
+
+
+##### **Layer 3: Pre-Generation Impact & Feedback Engine (Dry-Run)**
+
+Allows authors to preview merges, detect breaking changes, and evaluate roadmap compatibility via `POST /v1/boundary/specs/evaluate`:
+
+* **Roadmap Simulation Mode:** Allows authors to explicitly opt-in to dry-run against `ROADMAP_ONLY` dependencies to test future component compatibility before promotion to `ACTIVE`.
+
+##### **Layer 4: Lineage Rollback & Provenance Audit Engine**
+
+Provides simple, atomic rollback operations without destroying historical lineage:
+
+* **Point-in-Time Rollback Engine:** When a rollback is requested (`POST /v1/boundary/specs/rollback`), this layer marks the target version as `ROLLBACK_SUPERSEDED` and atomically points the URN pointer to the specified target previous version or auto-promotes a reverted clone.
+* **Audit Certificate:** Synchronously logs who initiated the rollback, the reason, affected downstream specs, and parent hash pointers.
+
+---
+
+#### **2. Interfaces, Contracts, & Payload Shapes**
+
+##### **Contract A: Inbound Specification with Roadmap Capabilities (`POST /v1/boundary/specs/publish`)**
+
+```json
+{
+  "request_context": {
+    "author_id": "usr_arch_9921",
+    "target_lifecycle_state": "ROADMAP_ONLY"
+  },
+  "spec": {
+    "urn": "urn:meta:bcr:provider:midwest:specs:SubscriberSpec:v2.0.0-draft",
+    "extends_urn": "urn:meta:bcr:telecom:blueprints:Subscriber:v2.0.0-roadmap",
+    "lifecycle": {
+      "state": "ROADMAP_ONLY",
+      "target_release_quarter": "2027-Q1",
+      "visibility": "AUTHORING_ONLY"
+    },
+    "delta_input": {
+      "attributes": {
+        "satellite_uplink_id": {
+          "type": "String",
+          "immutability": "EXTENDABLE",
+          "note": "Future 6G satellite connectivity attribute"
+        }
+      }
+    }
+  }
+}
+
+```
+
+##### **Contract B: Rollback / Undo Command Interface (`POST /v1/boundary/specs/rollback`)**
+
+**Request Payload:**
+
+```json
+{
+  "rollback_request": {
+    "target_urn": "urn:meta:bcr:provider:midwest:specs:SubscriberSpec:v1.2.0",
+    "action": "REVERT_TO_VERSION",
+    "revert_to_semver": "v1.1.0",
+    "reason": "Production flaw discovered in delta rules for v1.2.0",
+    "author_id": "usr_lead_arch_04"
+  }
+}
+
+```
+
+**Response Payload (Synchronous Rollback Certificate & Impact Graph):**
+
+```json
+{
+  "status": "ROLLBACK_SUCCESSFUL",
+  "timestamp": "2026-08-28T20:31:00Z",
+  "rollback_summary": {
+    "reverted_urn": "urn:meta:bcr:provider:midwest:specs:SubscriberSpec:v1.2.0",
+    "previous_state": "ACTIVE",
+    "new_state": "ROLLBACK_SUPERSEDED",
+    "active_pointer_restored_to": "urn:meta:bcr:provider:midwest:specs:SubscriberSpec:v1.1.0"
+  },
+  "affected_downstream_lineage": [
+    {
+      "dependent_urn": "urn:meta:bcr:artifacts:services:subscriber_service_py:v1.2.0",
+      "impact": "REQUIRES_RECOMPILATION",
+      "recommendation": "Re-run processing engine against restored active pointer v1.1.0"
+    }
+  ],
+  "provenance_audit_hash": "e9c8b7a6f5e4d3c2b1a0987654321fedcba9876543210abcdef9876543210abc"
+}
+
+```
+
+##### **Contract C: Processor Fetch Query (`GET /v1/boundary/specs/resolve`)**
+
+**Query Parameters:**
+`?urn=urn:meta:bcr:provider:midwest:specs:SubscriberSpec:v1&client_scope=processing`
+
+**Boundary Resolution Rule:**
+The boundary filters out all `ROADMAP_ONLY` and `ROLLBACK_SUPERSEDED` records by default, returning strictly the latest `ACTIVE` version (`v1.1.0`), preventing processors from compiling experimental or rolled-back structures.
+
+---
+
+#### **3. Edge Cases, Failure Modes, and Performance Trade-offs**
+
+| Category | Issue / Scenario | Mitigation / Architectural Handling |
+| --- | --- | --- |
+| **Edge Case** | **Cascading Rollback Inconsistency:** Rolling back a root Blueprint (`v1.0.0`) leaves child delta Specs referencing a missing/superseded parent version. | **Boundary Cascade Warning & Freeze:** Rollback layer evaluates the downstream graph. If active specs depend on the target version being reverted, the boundary rejects the hard revert unless a target fallback version is specified for the entire dependency tree. |
+| **Failure Mode** | **Accidental Processor Exposure to Roadmap Specs:** A downstream generator requests a URN without specifying version context during active development. | **Default Scope Enforcement:** At the boundary ingress, `client_scope` defaults to `processing` (strict filter for `ACTIVE` state only). `ROADMAP_ONLY` requires explicit `client_scope=authoring` headers and explicit pre-release version tags. |
+| **Trade-Off** | **Lifecycle Pointer Indirection vs. Direct Hash Lookup:** Resolving "latest ACTIVE" requires evaluating version lifecycle state metadata rather than a direct static key lookup. | **Decision:** Worth the tiny evaluation cost (~2-5ms) to guarantee safe rollbacks and clean roadmap/draft isolation without duplicating component trees. |
+
+---
+
+End of **Step 2: System Boundary (Contracts & Feedback)** incorporating version lifecycles, simple rollbacks, and roadmap isolation.
+
+**Step 3: Inside the System (State, Reprocessing & Engine Mechanics)**.
+
+I acknowledge my role as **Principal System Architect**. Step 2 is approved, and we are now moving to the final plane: **Step 3: Inside the System (State, Reprocessing & Engine Mechanics)**.
+
+Inside the system boundary, the BCR operates as a low-concurrency, ultra-high-integrity metadata repository. It does not perform actual application generation, compilation, or execution; instead, its core engine focuses entirely on **immutable state storage, graph indexing, deterministic blueprint resolution, lineage binding, and reprocessing query APIs**.
+
+---
+
+I acknowledge my role as **Principal System Architect**.
+
+### **Architectural Critique & Redesign Drivers**
+
+Your feedback highlights a crucial operational capability: **Hybrid Bundle Ingestion (Inline New Artifacts + URN References to Existing Artifacts) with Two-Phase Persistence Semantics.**
+
+#### **Critique of Prior Iteration vs. New Requirements:**
+
+1. **Payload Rigidity Flaw:** The previous bundle submission API assumed all referenced artifacts *already pre-existed* in the registry prior to bundle creation. This forced authors into an awkward multi-call workflow: publish Artifact A, publish Artifact B, obtain their URNs, and finally publish the Bundle aggregator.
+2. **Persistence Sequence Violation:** Lacking a defined ingestion workflow, an all-in-one payload could risk "orphaned bundle references" if an aggregator tried to link to inline items that hadn't yet passed integrity checks or storage write phases.
+3. **The Two-Phase Hybrid Ingestion Engine (The Fix):**
+* **Phase 1 (Decomposition & Artifact Persistence):** The ingestion pipeline parses incoming hybrid payloads, isolates inline artifact definitions, assigns/validates their individual URNs and SHA-256 digests, and persists them into CAS and `bcr_entities` first.
+* **Phase 2 (Aggregator Binding):** Once all inline artifacts are safely committed (alongside pre-existing referenced URNs), the pipeline constructs the Bundle Aggregator manifest, computes its composite digest, persists the aggregator record, and writes all link records to `bcr_bundle_memberships` in a single atomic transaction.
+
+
+
+---
+
+### **Step 3: Inside the System (State, Reprocessing & Engine Mechanics) — Redesigned**
+
+```
+                                    [ FROM STEP 2: BOUNDARY LAYER ]
+                                                    |
+                                                    v
++-------------------------------------------------------------------------------------------------------+
+|                                 BCR INTERNAL STORAGE & ENGINE PLANE                                   |
+|                                                                                                       |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                  TWO-PHASE HYBRID BUNDLE INGESTION & PIPELINE ENGINE                            |  |
+|  |                                                                                                 |  |
+|  |   [ Inbound Payload: Inline New Artifacts + Existing Artifact URN References ]                  |  |
+|  |                                                 |                                               |  |
+|  |         +---------------------------------------+---------------------------------------+       |  |
+|  |         | PHASE 1: Isolated Inline Artifacts    | PHASE 2: Aggregate Membership Pointers|       |  |
+|  |         v                                       v                                       v       |  |
+|  |   +--------------------------+            +--------------------------+    +------------------+  |  |
+|  |   | Persist Artifact Blobs   |            | Validate Pre-Existing    |    | Persist Bundle   |  |  |
+|  |   | & Entity Metadata First  |            | URN References           |    | Aggregator Record|  |  |
+|  |   +--------------------------+            +--------------------------+    +------------------+  |  |
+|  +-------------------------------------------------------------------------------------------------+  |
+|                               |                                      |                                |
+|                               v                                      v                                |
+|  +-----------------------------------------+      +------------------------------------------------+  |
+|  |       IMMUTABLE CAS OBJECT STORE        |      |       RELATIONAL ENTITY & GRAPH ENGINE         |  |
+|  |       (Blobs by Content Digest)         |      |                 (PostgreSQL)                   |  |
+|  |                                         |      |                                                |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  | Standalone Artifact Blobs         |  |      |  | Registry Entities (Artifacts & Bundles)  |  |  |
+|  |  | (Specs, Lifecycles, Workflows)    |  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  | Bundle Aggregation Membership Table      |  |  |
+|  |  | Bundle Aggregator Manifest Blobs  |  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      |  | Universal Lineage DAG Edge Table         |  |  |
+|  |  | Generated Binaries & Trace Certs  |  |      |  +------------------------------------------+  |  |
+|  |  +-----------------------------------+  |      +------------------------------------------------+  |
+|  +-----------------------------------------+                               /                          |
+|                               \                                           /                           |
+|                                v                                         v                            |
+|  +-------------------------------------------------------------------------------------------------+  |
+|  |                             DYNAMIC BUNDLE RESOLUTION & COMPOSER                               |  |
+|  |         (Dereferences Bundle Artifact URNs -> Resolves & Merges Standalone Artifacts)          |  |
+|  +-------------------------------------------------------------------------------------------------+  |
++-------------------------------------------------------------------------------------------------------+
+                                                    |
+                                                    v
+                                    [ TO DOWNSTREAM PROCESSORS / APIs ]
+
+```
+
+---
+
+#### **1. Core Storage & Engine Sub-Components**
+
+##### **1. Two-Phase Hybrid Ingestion Engine**
+
+To support atomic submissions containing both brand-new inline files and references to existing library items:
+
+* **Phase 1: Inline Artifact Extraction & Persistence**
+1. The engine iterates over `inline_artifacts`.
+2. For each inline item, it generates/validates the URN, calculates the SHA-256 digest, and writes the content to the CAS store.
+3. Inserts individual rows into `bcr_entities` with `entity_type = 'ARTIFACT'`.
+
+
+* **Phase 2: Validation & Aggregator Persistence**
+1. Validates that all items listed in `referenced_artifact_urns` exist in `bcr_entities` and are in an `ACTIVE` lifecycle state.
+2. Synthesizes the complete **Bundle Aggregator Manifest** (combining newly assigned URNs from Phase 1 and existing URNs from Phase 2).
+3. Writes the manifest blob to CAS, inserts the bundle entry into `bcr_entities` with `entity_type = 'BUNDLE'`, and populates `bcr_bundle_memberships` in a single DB transaction.
+
+
+
+##### **2. Dual-Tier Entity & Lineage Graph Engine**
+
+* **Entities:** Treats both standalone components and bundle aggregators as uniform entities indexed in `bcr_entities`.
+* **Memberships:** Captures structural aggregate relationships in `bcr_bundle_memberships`.
+* **Lineage Tracking:** Links bundle inputs directly to compilation outputs in `bcr_lineage_edges`.
+
+---
+
+#### **2. Database Schema & Payload Specifications**
+
+##### **A. Relational Schema (Supporting Two-Phase Hybrid Persistence)**
+
+```sql
+-- 1. Master Entity Registry (Artifacts and Bundle Aggregators)
+CREATE TABLE bcr_entities (
+    entity_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    urn VARCHAR(512) UNIQUE NOT NULL,
+    entity_type VARCHAR(32) NOT NULL,       -- 'ARTIFACT' or 'BUNDLE'
+    artifact_category VARCHAR(64),          -- 'SPEC', 'LIFECYCLE', 'WORKFLOW', 'METADATA', 'GENERATED_CODE'
+    semver VARCHAR(64) NOT NULL,
+    lifecycle_state VARCHAR(32) NOT NULL,    -- 'DRAFT', 'ACTIVE', 'DEPRECATED', 'ROLLBACK_SUPERSEDED', 'ROADMAP_ONLY'
+    content_sha256 CHAR(64) NOT NULL,        -- Hash of individual payload or bundle manifest in CAS
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(128) NOT NULL
+);
+
+-- 2. Bundle Membership Mapping (Links Aggregators to Member Artifacts)
+CREATE TABLE bcr_bundle_memberships (
+    membership_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bundle_urn VARCHAR(512) NOT NULL REFERENCES bcr_entities(urn) ON DELETE CASCADE,
+    member_urn VARCHAR(512) NOT NULL REFERENCES bcr_entities(urn) ON DELETE RESTRICT,
+    member_alias VARCHAR(128) NOT NULL,      -- Logical role (e.g., 'primary_spec', 'entity_lifecycle')
+    source_origin VARCHAR(32) NOT NULL,      -- 'INLINE_NEW' or 'PRE_EXISTING_REFERENCE'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (bundle_urn, member_urn)
+);
+
+-- 3. Lineage Graph (Input Units -> Output Artifacts)
+CREATE TABLE bcr_lineage_edges (
+    edge_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_urn VARCHAR(512) NOT NULL,
+    target_urn VARCHAR(512) NOT NULL,
+    edge_type VARCHAR(64) NOT NULL,          -- 'EXTENDS', 'PRODUCED_ARTIFACT', 'DEPENDS_ON'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_bundle_memberships_bundle ON bcr_bundle_memberships(bundle_urn);
+CREATE INDEX idx_lineage_source_target ON bcr_lineage_edges(source_urn, target_urn);
+
+```
+
+##### **B. Hybrid Bundle Ingestion Payload (`POST /v1/internal/bundles/publish-hybrid`)**
+
+```json
+{
+  "bundle_header": {
+    "urn": "urn:meta:bcr:provider:midwest:bundles:OrderFulfillmentModule:v1.0.0",
+    "lifecycle_state": "ACTIVE",
+    "author": "jane.doe@comcast.com"
+  },
+  "unit_of_work": {
+    "inline_artifacts": [
+      {
+        "alias": "primary_spec",
+        "urn": "urn:meta:bcr:provider:midwest:specs:OrderSpec:v1.0.0",
+        "artifact_category": "SPEC",
+        "content_type": "application/json",
+        "content": {
+          "extends_urn": "urn:meta:bcr:telecom:blueprints:Order:v1.0.0",
+          "attributes": { "order_id": { "type": "UUID" } }
+        }
+      },
+      {
+        "alias": "entity_lifecycle",
+        "urn": "urn:meta:bcr:provider:midwest:lifecycles:OrderLifecycle:v1.0.0",
+        "artifact_category": "LIFECYCLE",
+        "content_type": "application/json",
+        "content": {
+          "initial_state": "SUBMITTED",
+          "states": ["SUBMITTED", "PROCESSING", "COMPLETED", "FAILED"]
+        }
+      }
+    ],
+    "referenced_artifact_urns": [
+      {
+        "alias": "orchestration_workflow",
+        "member_urn": "urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.1.0"
+      },
+      {
+        "alias": "namespace_metadata",
+        "member_urn": "urn:meta:bcr:global:metadata:MidwestRegionConfig:v1.0.0"
+      }
+    ]
+  }
+}
+
+```
+
+##### **C. Ingestion Execution Audit Response Payload**
+
+```json
+{
+  "status": "BUNDLE_PUBLISHED",
+  "bundle_urn": "urn:meta:bcr:provider:midwest:bundles:OrderFulfillmentModule:v1.0.0",
+  "composite_bundle_sha256": "7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e",
+  "ingestion_summary": {
+    "persisted_inline_artifacts": [
+      {
+        "urn": "urn:meta:bcr:provider:midwest:specs:OrderSpec:v1.0.0",
+        "sha256": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+        "status": "PERSISTED_NEW"
+      },
+      {
+        "urn": "urn:meta:bcr:provider:midwest:lifecycles:OrderLifecycle:v1.0.0",
+        "sha256": "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+        "status": "PERSISTED_NEW"
+      }
+    ],
+    "linked_referenced_artifacts": [
+      {
+        "urn": "urn:meta:bcr:telecom:workflows:StandardProvisioningFlow:v2.1.0",
+        "status": "LINKED_EXISTING"
+      },
+      {
+        "urn": "urn:meta:bcr:global:metadata:MidwestRegionConfig:v1.0.0",
+        "status": "LINKED_EXISTING"
+      }
+    ]
+  }
+}
+
+```
+
+---
+
+#### **3. Edge Cases, Failure Modes, and Performance Trade-offs**
+
+| Category | Scenario / Failure Mode | Mitigation & System Handling |
+| --- | --- | --- |
+| **Edge Case** | **Partial Ingestion Failure during Two-Phase Commit:** Phase 1 persists 2 out of 3 inline artifacts, but the 3rd fails validation or storage write. | **Transactional CAS Rollback & DB Abort:** DB insertion operates in a single explicit transaction block. If any inline artifact fails, uncommitted CAS keys are scheduled for immediate garbage collection, and the DB transaction rolls back completely. Neither the new artifacts nor the bundle become visible. |
+| **Edge Case** | **Missing Pre-Existing Reference:** A payload references an existing URN (`StandardProvisioningFlow:v9.9.9`) that does not exist in `bcr_entities`. | **Phase 2 Validation Gate:** Phase 2 validates all referenced URNs against `bcr_entities` *before* attempting bundle creation. Returns `REFERENCED_ARTIFACT_NOT_FOUND` and aborts prior to bundle manifest persistence. |
+| **Failure Mode** | **Duplicate Inline URN Conflict:** An author submits an inline artifact using a URN that already exists in the registry. | **Idempotent Match or Conflict Rejection:** If content hash matches the existing record, the engine reuses the existing URN (`LINKED_EXISTING_MATCH`). If the content differs, it rejects with `URN_ALREADY_EXISTS_CONFLICT`, forcing a version bump. |
+| **Trade-Off** | **Two-Phase Write Latency vs. Single-Call Developer Ergonomics:** Processing inline uploads alongside pre-existing reference validation in a single request adds ~20-40ms to the write path. | **Decision:** **High value for developer experience.** Authors get a single, intuitive API call (`POST /v1/internal/bundles/publish-hybrid`) while the system guarantees strict internal relational integrity and 100% atomic persistence. |
+
+---
+
+We have completed the redesigned **Step 3: Inside the System (State, Reprocessing & Engine Mechanics)** supporting **Two-Phase Hybrid Bundle Ingestion, Standalone & Aggregator Entity Models, and Atomic Relational Commit Mechanics**.

@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+import rule_engine
+
+from {{ package_name }}.exceptions import BusinessRuleError
+from meta_telemetry import get_tracer, trace_span
+
+
+tracer = get_tracer(
+    "{{ package_name }}.execution.rules"
+)
+
+
+class {{ model.class_name }}RuleEngine:
+    """Generated deterministic business-rule evaluator for {{ model.class_name }}."""
+
+    _RULES: tuple[tuple[str, int, str, str, str], ...] = (
+        {% for rule in rules %}
+        (
+            {{ rule.name | python_literal }},
+            {{ rule.priority }},
+            {{ rule.expression | python_literal }},
+            {{ rule.error_code | python_literal }},
+            {{ rule.error_message | python_literal }},
+        ),
+        {% endfor %}
+    )
+
+    def __init__(self) -> None:
+        self._compiled: dict[str, rule_engine.Rule] = {}
+
+        for rule_id, _, expression, _, _ in self._RULES:
+            try:
+                self._compiled[rule_id] = rule_engine.Rule(
+                    expression
+                )
+            except rule_engine.EngineError as exc:
+                raise ValueError(
+                    f"Failed to compile generated rule '{rule_id}'."
+                ) from exc
+
+    @trace_span("rules.evaluate")
+    def evaluate(
+        self,
+        values: Mapping[str, Any],
+    ) -> None:
+        """Evaluate all generated rules without executing generated Python."""
+
+        if not isinstance(values, Mapping):
+            raise TypeError(
+                "values must implement Mapping."
+            )
+
+        for (
+            rule_id,
+            _,
+            _,
+            error_code,
+            error_message,
+        ) in sorted(
+            self._RULES,
+            key=lambda item: (item[1], item[0]),
+        ):
+            rule = self._compiled[rule_id]
+
+            try:
+                passed = bool(
+                    rule.matches(dict(values))
+                )
+            except rule_engine.EngineError as exc:
+                raise BusinessRuleError(
+                    message=(
+                        f"Rule evaluation failed for '{rule_id}'."
+                    ),
+                    error_code="ERR_RULE_EVALUATION_FAILED",
+                    details={
+                        "rule_id": rule_id,
+                        "cause": str(exc),
+                    },
+                ) from exc
+
+            if not passed:
+                raise BusinessRuleError(
+                    message=error_message,
+                    error_code=error_code,
+                    details={"rule_id": rule_id},
+                )

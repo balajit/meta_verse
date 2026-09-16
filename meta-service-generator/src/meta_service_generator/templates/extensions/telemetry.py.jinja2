@@ -1,0 +1,14 @@
+from __future__ import annotations
+
+from meta_telemetry import get_tracer
+
+
+def init_telemetry(service_name: str) -> None:
+    """Initializes tracing and telemetry configuration for the service."""
+
+    _ = get_tracer(service_name)
+
+
+tracer = get_tracer(
+    "{{ package_name }}.extensions.telemetry"
+)

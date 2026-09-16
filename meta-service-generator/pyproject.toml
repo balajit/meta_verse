@@ -1,0 +1,106 @@
+    [build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-service-generator"
+version = "0.1.0"
+description = "Meta-generator synthesizing zero-modification production-grade FastAPI microservices"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    { name = "Principal Software Architect", email = "architect@meta.internal" }
+]
+dependencies = [
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "typer>=0.12.0",
+    "pyyaml>=6.0.1",
+    "jsonschema>=4.21.0",
+    "rich>=13.7.0",
+    "meta-config",
+    "meta-telemetry",
+    "meta_compiler",
+    "opentelemetry-api>=1.22.0",
+    "opentelemetry-sdk>=1.22.0",
+    "libcst>=1.9.0",
+    "types-pyyaml>=6.0.12.20260906",
+    "types-jsonschema>=4.26.0.20260518",
+    "networkx>=3.6.1",
+    "jinja2>=3.1.6",
+    "black>=26.5.1",
+    "statemachine>=0.1",
+]
+
+[project.scripts]
+meta-service-generator = "meta_service_generator.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meta_service_generator"]
+
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "N", "UP", "PL", "RUF"]
+ignore = []
+
+
+[tool.uv.sources]
+meta-config = { path = "../meta-config", editable = true }
+meta-context = { path = "../meta-context", editable = true }
+meta-telemetry = { path = "../meta-telemetry", editable = true }
+meta_compiler = { path = "../meta_compiler", editable = true }
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as an asynchronous test handler",
+]
+addopts = [
+    "-ra -q --strict-markers",
+    "--cov=meta_service_generator",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80"
+]
+
+[tool.pylint.main]
+py-version = "3.13"
+fail-under = 9.0
+
+[tool.pylint.messages_control]
+disable = [
+    "too-few-public-methods",
+    "broad-exception-caught",
+]
+
+[dependency-groups]
+dev = [
+    "pipdeptree>=4.2.3",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "pytest-asyncio>=1.4.0",
+]

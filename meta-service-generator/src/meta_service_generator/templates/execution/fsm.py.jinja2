@@ -1,0 +1,62 @@
+# Synthesized python-statemachine implementation
+from __future__ import annotations
+
+import logging
+
+from meta_telemetry import get_tracer, trace_span
+from statemachine import State, StateMachine
+
+tracer = get_tracer(
+    "{{ package_name }}.execution.{{ model.name | snake_case }}"
+)
+
+logger = logging.getLogger(__name__)
+
+
+class {{ model.class_name }}FSM(StateMachine):  # type: ignore[misc]
+    """Declarative Finite State Machine for {{ model.class_name }} using python-statemachine."""
+
+{% for state in model.fsm.states %}
+    {% set state_name = state | string %}
+    {% set state_id = state_name | snake_case %}
+    {% set state_value = state_name | upper %}
+    {{ state_id }} = State(
+        {{ state_value | python_literal }},
+        initial={{ state_name == model.fsm.initial_state }},
+        final={{
+            state_name not in (
+                model.fsm.transitions
+                | map(attribute="source_state")
+                | list
+            )
+        }},
+    )
+{% endfor %}
+
+{% for transition in model.fsm.transitions %}
+    {% set source_id = transition.source_state | snake_case %}
+    {% set target_id = transition.target_state | snake_case %}
+    {% set trigger_id = transition.trigger | snake_case %}
+    {% set transition_id = trigger_id ~ "__from__" ~ source_id %}
+    {{ transition_id }} = {{ source_id }}.to({{ target_id }})
+{% endfor %}
+
+    def __init__(
+        self,
+        current_state: str | None = None,
+    ) -> None:
+        super().__init__(
+            start_value=current_state
+        )
+
+    @trace_span("fsm.on_transition")
+    def on_transition(
+        self,
+        event: str,
+        state: State,
+    ) -> None:
+        logger.info(
+            "FSM transition event '%s' executed. New state: '%s'.",
+            event,
+            state.id,
+        )

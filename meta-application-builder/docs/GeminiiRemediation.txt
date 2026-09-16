@@ -1,0 +1,74 @@
+An analysis of the co-architect evaluation report against the newly integrated `meta_compiler` module indicates that several reported findings are false positives already resolved by the modular compiler components. The remaining issues require an architectural remediation plan to establish an immutable, tenant-safe, deterministic control and data plane.
+
+---
+
+### Analysis of False Positives & Built Components
+
+The codebase includes standalone `meta_compiler` modules that resolve or mitigate specific co-architect findings:
+
+| Co-Architect Finding | Codebase Reality (`meta_compiler`) | Status |
+| --- | --- | --- |
+| **Code Generation / Type String Interpolation** | `MetaCompiler` and `build_dynamic_artifact_schema()` use Pydantic V2 `create_model()` and `PRIMITIVE_TYPE_MAP` rather than direct string interpolation, generating collision-free model class names via SHA-256 digests (`_generate_deterministic_class_name`).
+
+ | **Mitigated in Compiler** |
+| **Missing Type & Contract Verification** | `meta_compiler.contracts.contract_checker` implements `verify_edge_contracts()` and `is_type_compatible()` to validate producer output to consumer input assignability, alongside dynamic Hamilton driver dry-run execution.
+
+ | **Resolved** |
+| **Graph Cycle Complexity & Logging Amplification** | `meta_compiler.validators.topology_validator` avoids $O(n^2)$ queue pops and unbounded cycle enumeration by using `nx.is_directed_acyclic_graph()` and `nx.find_cycle()`. It pre-validates all dependency target references via `validate_dependency_references()` prior to graph assembly.
+
+ | **Resolved** |
+| **In-Memory Dry Run vs DB Persistence Decoupled Pipeline** | `meta_compiler.orchestrator` isolates pure in-memory compilation (`compile_manifest`) from DB persistence (`register_workflow`), while `meta_compiler.cli` exposes explicit `validate` (dry-run Stages 1–4) and `register` commands.
+
+ | **Resolved** |
+| **Serializer Transaction Scope** | `meta_compiler.persistence.db_serializer.persist_workflow_definition` explicitly delegates transaction lifecycle management (`commit`/`rollback`) to the caller.
+
+ | **Resolved** |
+
+---
+
+### Remediation Plan by Architectural Domain
+
+**Domain 1: Schema Registry, Revisioning & Compatibility Governance**
+
+* **Registry Persistence Immutability**: Replace generic `TenantAwareMixin` `updated_at` mutation semantics on registry entities with an explicit append-only schema: `(registry_id, revision_id, schema_version, content_digest, published_at, published_by, parent_revision_id)`. Enforce DB-level immutability using PostgreSQL rules/triggers blocking `UPDATE`/`DELETE` on rows marked `status = 'PUBLISHED'`.
+* **URN Compatibility Engine**: Implement a structural compatibility checker in `urn_parser.py` that computes manifest/schema AST diffs between `parent_revision_id` and candidate revisions. Classify changes as `BACKWARD_COMPATIBLE` (patch/minor), `FORWARD_COMPATIBLE` (minor), or `BREAKING` (major). Reject publication if the declared SemVer bump does not match computed classification or lacks required migration metadata.
+* **Atomic Dependency Snapshotting**: Resolve dependency graphs against a single immutable version vector at build initiation. Persist the pinned dependency manifest alongside the build job. Validate that no upstream dependency revision changed prior to publication atomic commit.
+* **Transitive Closure & Topological Consistency**: Materialize lineage closure tables via snapshot generations tied strictly to immutable registry revision IDs. Rebuild closure tables in staging schemas with atomic swapping (`RENAME TABLE` or transactional generation keys).
+
+**Domain 2: Distributed Concurrency, Saga Durability & Fencing Control Plane**
+
+* **Durable Publication Saga**: Transition `SagaOrchestrator` from in-memory maps to PostgreSQL persistence (`bcr_sagas` table) tracking durable states (`RESERVED`, `COMMITTING`, `COMMITTED`, `ROLLED_BACK`, `EXPIRED`). Enforce unique `saga_id` database constraints with transactional reservation acquisition.
+* **Transactional Idempotency**: Implement `INSERT ... ON CONFLICT (tenant_id, idempotency_key)` in `submit_endpoint.py`. Store request SHA-256 payload fingerprint, response body, and `job_id`. Replay exact responses for identical keys; return HTTP 409 Conflict if payload fingerprint differs.
+* **Atomic State Machine & Durable Cancellation**: Replace in-memory state transitions with database CAS updates:
+
+$$\text{UPDATE build\_jobs SET state = :new\_state, version\_id = version\_id + 1 WHERE id = :job\_id AND state = :expected\_state AND version\_id = :expected\_version}$$
+
+
+
+For `/cancel/{job_id}`, execute durable CAS update and publish a cancellation fencing token to notify active workers.
+* **Fencing Contract & Worker Leases**: Redefine fencing token as a strict ordered tuple `(lease_generation, version_id)` where both components must monotonically match or increment current state. Workers must maintain durable DB leases renewed via heartbeats and verify fencing tokens before executing side-effects (e.g., CAS write or BCR publish).
+
+**Domain 3: Compiler Engine Hardening, AST Safety & Containerized Isolation**
+
+* **AST Code Generation Allowlisting**: Replace arbitrary string/module imports in `ast_builder.py`, `pydantic_emitter.py`, and `sqlalchemy_emitter.py` with strict AST node generation. Restrict imports to explicit allowlists (e.g., `pydantic`, `typing`, `sqlalchemy`). Reject arbitrary type hints, default expressions, or unverified module names.
+* **Sandbox Runtime Execution Boundary**: Treat generated code as hostile. Move execution out of the host process into gRPC-isolated microVM/WASM/container sandboxes with read-only root filesystems, dropped capabilities, no network/host credential access, strict memory/CPU cgroups, and seccomp filters. Static tools (`ruff`/`mypy`) act as pre-sandboxing lint checks, not execution isolation.
+* **Payload & Memory Limits**: Enforce multi-tier payload limits during Phase A/B parsing: strict raw byte cap, maximum nesting depth, AST node limits, and string/array cardinality bounds prior to materialization.
+
+**Domain 4: Multi-Tenant Security Boundary & Fine-Grained Authorization**
+
+* **JWKS Authentication Boundary**: Verify JWT signatures at API Gateway using pinned issuer/audience, approved algorithms (e.g., RS256/ES256), JWKS key rotation, and clock skew validation in `claims.py` before instantiating `SecurityClaims`.
+* **Systemic Database Row Level Security (RLS)**: Extend PostgreSQL RLS policies across all tenant-owned tables (`build_jobs`, `audit_events`, `idempotency_keys`, `lineage_closure`, `sagas`). Set `app.current_tenant` per transaction. Add composite foreign key constraints referencing `tenant_id`.
+* **Fine-Grained OPA Authorization**: Expand OPA evaluation from `(tenant, spec)` to a 5-tuple: `(principal, tenant, action, resource_urn, environment)`. Enforce authorization on control plane endpoints (`/artifact`, `/status`, `/cancel`) via tenant-scoped RLS lookups and OPA policy checks.
+
+**Domain 5: Reliable Asynchronous Execution, Outbox Queue & Telemetry**
+
+* **Transactional Outbox Publisher**: Implement worker polling on `outbox_events` using `SELECT ... FOR UPDATE SKIP LOCKED`. Claim events with durable worker leases, track `attempt_count`, implement exponential backoff retry via `next_attempt_at`, and mark completed upon broker ACK.
+* **W3C Distributed Tracing & Audit Identity**: Inject W3C `traceparent`/`tracestate` headers along with `tenant_id`, `job_id`, `saga_id`, and `causation_id` into `queue_envelope.py`. Extend OpenTelemetry (`otel_config.py`) with production OTLP exporters and explicit spans around compilation, governance, CAS, and worker tasks.
+* **Audit Log & Cryptographic Tamper-Evident Chain**: Add an explicit `event_id` with a unique constraint for idempotent audit log appends. Canonically hash event envelopes containing `(tenant_id, job_id, event_id, event_type, actor, timestamp, sequence_number, prev_hash, payload_digest)` to protect against tamper risks.
+
+**Domain 6: Core Orchestration Stitching (`BuildApplicationService`)**
+
+* Implement `BuildApplicationService` as the canonical control-plane orchestrator composing `meta_compiler`, `GovernanceService`, `CASStorage`, `BCRPublisher`, `AuditService`, and `OutboxPublisher`.
+
+
+* Map control plane endpoints (`/submit`, `/validate`, `/status`, `/artifact`) and CLI modes (`direct_mode`, `remote_mode`) to call `BuildApplicationService` ports, eliminating stubs and hard-coded mock responses.

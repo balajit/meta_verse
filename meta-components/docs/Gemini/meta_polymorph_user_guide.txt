@@ -1,0 +1,291 @@
+# MetaPolymorph Architecture & Developer Guide
+
+`meta_polymorph` is an dynamic metadata hydration, multi-tenant namespace inheritance, structural polymorphic merging, and Finite State Machine (FSM) persistence library. It prepares, validates, and transforms complex workflow DAGs across inheritance tiers before handing them off to the lower-level execution engine (`meta_compiler`).
+
+---
+
+## 1. System Architecture & Core Concepts
+
+### Architectural Layers
+
+```
++---------------------------------------------------------------------------------+
+|                                 Application                                     |
++---------------------------------------------------------------------------------+
+                                       |
+                                       v
++---------------------------------------------------------------------------------+
+|                            meta_polymorph Engine                                |
+|                                                                                 |
+|  +-----------------------+   +----------------------+   +--------------------+  |
+|  |   Namespace Engine    |   |  Hydrator & Parser   |   | Polymorphic Merger |  |
+|  |  (TreeResolver, OPA)  |   | (Ruamel AST/Hasher)  |   |  (DeepMerger/DAG)  |  |
+|  +-----------------------+   +----------------------+   +--------------------+  |
+|                                         |                                       |
+|  +--------------------------------------+------------------------------------+  |
+|  |                    FSM & State Persister Engine                           |  |
+|  |           (DynamicEntityStateMachine, OptimisticLock, Outbox)             |  |
+|  +---------------------------------------------------------------------------+  |
++---------------------------------------------------------------------------------+
+                                       |
+                                       v
++---------------------------------------------------------------------------------+
+|                        meta_compiler (Phase 1 IR Orchestration)                 |
++---------------------------------------------------------------------------------+
+
+```
+
+### Core Concepts
+
+* **Multi-Tenant Hierarchy Tiers**: Namespaces resolve strictly down the hierarchy: **`CUSTOM` $\rightarrow$ `INDUSTRY` $\rightarrow$ `GLOBAL**`.
+* **Polymorphic Merging**: Combines specifications using deep dict merging (`jsonmerge`), RFC 6902 JSON Patches (`jsonpatch`), and topological DAG operations (`ADD`, `REPLACE`, `DISABLE`, `WRAP`).
+* **Deterministic Hashing**: Canonical `canonical-json-v1` UTF-8 formatting generating SHA-256 signatures.
+* **FSM & Optimistic Locking**: Dynamic state transition checks guarded by `python-statemachine` and version checks on PostgreSQL entities (`version = expected_version + 1`).
+* **Transactional Outbox Staging**: Persists domain transition events into `outbox_messages` within the primary database transaction to guarantee at-least-once downstream delivery.
+
+---
+
+## 2. Dynamic Namespace Resolution Engine
+
+The namespace engine uses NetworkX directed acyclic graphs (`DiGraph`) to traverse inheritance paths while preventing cyclic dependency loops.
+
+### Quick Start Example
+
+```python
+from meta_polymorph.core.types import NamespaceTier, ResolutionContext
+from meta_polymorph.namespace.models import NamespaceNode
+from meta_polymorph.namespace.resolver import NamespaceResolver
+from meta_polymorph.namespace.tree_resolver import TreeResolver
+
+# 1. Initialize DAG Tree Resolver
+tree_resolver = TreeResolver()
+
+# 2. Add Hierarchy Nodes
+tree_resolver.add_node(NamespaceNode(id="global", name="Global Tier", tier=NamespaceTier.GLOBAL))
+tree_resolver.add_node(NamespaceNode(id="fintech", name="FinTech Industry", tier=NamespaceTier.INDUSTRY, parent_id="global"))
+tree_resolver.add_node(NamespaceNode(id="acme_bank", name="Acme Bank Tenant", tier=NamespaceTier.CUSTOM, parent_id="fintech"))
+
+# 3. Resolve Candidate Path
+resolver = NamespaceResolver(tree_resolver)
+context = ResolutionContext.create(
+    tenant_id="tenant_acme",
+    industry_domain="fintech",
+    custom_namespace="acme_bank"
+)
+
+path = resolver.resolve_candidate_path(context)
+print(path.path)  # Outputs: ['acme_bank', 'fintech', 'global']
+print(path.effective_tier)  # Outputs: NamespaceTier.CUSTOM
+
+```
+
+---
+
+## 3. Polymorphic Merging & DAG Operations
+
+The `PolymorphicMerger` applies tier configurations sequentially and exports a normalized, hash-verified execution structure.
+
+### Dynamic Overlay Steps
+
+1. **Attribute Merge**: Deep-merges dictionary properties via `jsonmerge`.
+2. **DAG Deltas**: Executes operations on flow graph nodes:
+* `ADD`: Adds a node and connects targets.
+* `REPLACE`: Updates attributes of existing nodes.
+* `DISABLE`: Sets `disabled=True` while keeping edges intact to prevent graph disconnections.
+* `WRAP`: Inserts a wrapper interceptor node between existing parent/child edges.
+
+
+3. **JSON Patches**: Applies standard JSON Patch lists to fine-tune final specs.
+
+```python
+from meta_polymorph.merger.polymorphic_merge import PolymorphicMerger
+
+merger = PolymorphicMerger()
+
+global_tier = {
+    "attributes": {"timeout": 30, "retries": 3},
+    "nodes": [{"id": "fetch_data"}, {"id": "process_data"}],
+    "edges": [["fetch_data", "process_data"]]
+}
+
+industry_tier = {
+    "attributes": {"domain": "finance"},
+    "deltas": [
+        {
+            "op": "WRAP",
+            "target_id": "process_data",
+            "payload": {"wrapper_id": "audit_interceptor", "wrapper_attrs": {"log": True}}
+        }
+    ]
+}
+
+custom_tier = {
+    "json_patches": [{"op": "replace", "path": "/timeout", "value": 60}]
+}
+
+# Execute Merging Strategy
+manifest, manifest_hash = merger.merge_tier_manifests([global_tier, industry_tier, custom_tier])
+
+```
+
+---
+
+## 4. Entity Lifecycle FSM & Outbox Persistence
+
+`meta_polymorph` implements state machines using `LifecycleGuard` alongside atomic PostgreSQL updates.
+
+### Valid LifeCycle States & Transitions
+
+* `DRAFT` $\rightarrow$ `PENDING_APPROVAL` (Trigger: `SUBMIT`)
+* `PENDING_APPROVAL` $\rightarrow$ `ACTIVE` (Trigger: `APPROVE`)
+* `PENDING_APPROVAL` $\rightarrow$ `DRAFT` (Trigger: `REJECT`)
+* `ACTIVE` $\rightarrow$ `DEPRECATED` (Trigger: `DEPRECATE`)
+* `DEPRECATED` / `ACTIVE` $\rightarrow$ `ARCHIVED` (Trigger: `ARCHIVE`)
+* `ARCHIVED` $\rightarrow$ `DRAFT` (Trigger: `RESTORE`)
+
+```python
+from meta_polymorph.core.types import LifecycleState
+from meta_polymorph.fsm.lifecycle_guard import LifecycleGuard
+from meta_polymorph.fsm.models import TransitionRequest
+from meta_polymorph.fsm.state_persister import StatePersister
+
+# 1. Validate FSM State Transition
+guard = LifecycleGuard()
+guard.register_guard("is_admin", lambda ctx: ctx.get("role") == "admin")
+
+# Validates transition syntax and guard constraints
+guard.evaluate(
+    current_state=LifecycleState.PENDING_APPROVAL,
+    target_state=LifecycleState.ACTIVE,
+    guard_name="is_admin",
+    context={"role": "admin"}
+)
+
+# 2. Persist State Atomically with Optimistic Locking
+async def execute_transition(session, entity_id: str, current_version: int):
+    persister = StatePersister(session)
+
+    request = TransitionRequest(
+        entity_id=entity_id,
+        target_state=LifecycleState.ACTIVE,
+        event_name="approve",
+        actor_id="admin_user_01",
+        expected_version=current_version,
+        payload={"approved_by": "admin_user_01"}
+    )
+
+    # Updates EntityInstanceModel, writes OutboxMessageModel, increments version
+    result = await persister.persist_transition(request, current_state=LifecycleState.PENDING_APPROVAL)
+    return result.new_version
+
+```
+
+---
+
+## 5. Domain Realizers & Compiler Handoff
+
+Domain Realizers convert domain business specifications into `HydratedManifestPayload` models and pass them through `CompilerAdapter` to `meta_compiler`.
+
+### Architecture Realizer Pipeline
+
+```python
+from meta_polymorph.adapters.compiler_adapter import CompilerAdapter
+from meta_polymorph.domain.dtos import HydratedManifestPayload
+from meta_polymorph.hydrator.realizers.base_realizer import BaseRealizer
+
+class CustomServiceRealizer(BaseRealizer):
+    async def realize_and_submit(self, tenant_id: str, entity_id: str):
+        # 1. Hydrate raw manifest definitions across multi-tenant tiers
+        merged_spec = await self.hydrator.hydrate(tenant_id, entity_id)
+
+        # 2. Construct Hydrated Payload DTO
+        payload = HydratedManifestPayload(
+            tenant_id=tenant_id,
+            entity_id=entity_id,
+            spec=merged_spec
+        )
+
+        # 3. Route through Compiler Adapter to meta_compiler
+        adapter = CompilerAdapter(session=self.session)
+        return await adapter.emit_to_compiler(payload)
+
+```
+
+---
+
+## 6. Library Integration Recipes
+
+### Complete Flow Example for App Developers
+
+```python
+import asyncio
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+from meta_polymorph.adapters.compiler_adapter import CompilerAdapter
+from meta_polymorph.domain.dtos import HydratedManifestPayload
+from meta_polymorph.hydrator.yaml_parser import ManifestYAMLParser
+
+YAML_MANIFEST = """
+namespace: payments_v1
+name: settlement_workflow
+version: 2.1.0
+nodes:
+  - id: validate_account
+    type: standard
+  - id: execute_transfer
+    type: standard
+edges:
+  - - validate_account
+    - execute_transfer
+attributes:
+  currency: USD
+"""
+
+async def run_pipeline():
+    # Step 1: Parse & normalize raw inputs
+    parser = ManifestYAMLParser()
+    normalized_spec = parser.parse_and_normalize(YAML_MANIFEST)
+
+    # Step 2: Wrap inside payload transfer object
+    payload = HydratedManifestPayload(
+        tenant_id="tenant_fintech_01",
+        entity_id="settlement_flow",
+        spec=normalized_spec
+    )
+
+    # Step 3: Run inside active database transaction
+    engine = create_async_engine("postgresql+asyncpg://postgres:postgres@localhost:5432/meta_polymorph")
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with async_session() as session:
+        adapter = CompilerAdapter(session=session)
+        compiled_ir = await adapter.emit_to_compiler(payload)
+        await session.commit()
+        return compiled_ir
+
+if __name__ == "__main__":
+    asyncio.run(run_pipeline())
+
+```
+
+---
+
+## 7. Guidelines for Code Generators & LLMs
+
+When writing code that uses `meta_polymorph`, make sure to follow these invariants:
+
+1. **Strict Immutability**: `BasePayloadModel` and `AppSettings` use frozen configurations (`frozen=True`). Return new updated model copies using `.model_copy(update=...)` instead of mutating instances directly.
+2. **Explicit Version Contracts**: Always check and pass the current instance `expected_version` into `StatePersister.persist_transition`. Handle `OptimisticLockError` exceptions gracefully.
+3. **Safe Exception Hierarchy**: Catch system errors using the built-in domain exceptions in `meta_polymorph.core.exceptions`:
+* `ResolutionError` / `NamespaceCycleError`
+* `MergeConflictError` / `ContractViolationError`
+* `InvalidStateTransitionError`
+* `ManifestHydrationError`
+* `PolymorphicCompilationError`
+
+
+4. **Ruamel AST Conversion**: Always pass raw YAML strings through `ManifestYAMLParser.normalize()` to remove internal Ruamel AST map/sequence wrappers before generating JSON objects or hashes.
+
+
+5. **Session Management**: Session functions yielded by `get_db_session()` do not auto-commit. Call `await session.commit()` or manage transaction blocks explicitly.
