@@ -1,0 +1,135 @@
+i{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "manifest-orchestrator",
+  "agent": {
+    "manifest-orchestrator": {
+      "description": "Runs the complete staged manifest generation pipeline.",
+      "mode": "primary",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 40,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "bash": "allow",
+        "task": "allow",
+        "todowrite": "allow",
+        "todoread": "allow"
+      }
+    },
+    "manifest-schema": {
+      "description": "Reverse-engineers manifest.schema.json into a deterministic implementation contract.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 12,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-domain": {
+      "description": "Extracts the normalized domain model from the source requirements.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 16,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-relationships": {
+      "description": "Builds the canonical directional relationship and aggregate model.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 14,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-workflows": {
+      "description": "Models FSMs, workflows, dependencies, guards, and retries.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 18,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-policies": {
+      "description": "Extracts policies, business rules, authorization, and event semantics.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 16,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-assemble": {
+      "description": "Generates the single production manifest from all normalized artifacts.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 24,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-validate": {
+      "description": "Runs structural JSON Schema validation and conservatively repairs the manifest.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 20,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "manifest-audit": {
+      "description": "Performs the final semantic audit and hardens the manifest.",
+      "mode": "subagent",
+      "model": "github-copilot/claude-sonnet-4.5",
+      "steps": 20,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "bash": "allow"
+      }
+    }
+  }
+}

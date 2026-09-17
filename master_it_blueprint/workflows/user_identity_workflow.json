@@ -1,0 +1,487 @@
+User Identity - Workflows    
+
+
+{
+"version": "1.0.0",
+"service_name": "course_catalog_service",
+"entities": [
+{
+"name": "Course",
+"tableName": "courses",
+"attributes": [
+{
+"name": "id",
+"type": "uuid",
+"primary_key": true
+},
+{
+"name": "title",
+"type": "str"
+},
+{
+"name": "slug",
+"type": "str",
+"unique": true,
+"indexed": true
+},
+{
+"name": "description",
+"type": "str"
+},
+{
+"name": "target_audience",
+"type": "str"
+},
+{
+"name": "tags",
+"type": "list"
+},
+{
+"name": "default_currency",
+"type": "str"
+},
+{
+"name": "price",
+"type": "float"
+},
+{
+"name": "status",
+"type": "str"
+},
+{
+"name": "registration_start_at",
+"type": "datetime",
+"nullable": true
+},
+{
+"name": "registration_end_at",
+"type": "datetime",
+"nullable": true
+},
+{
+"name": "active_course_version_id",
+"type": "uuid",
+"nullable": true
+}
+],
+"relationships": [
+{
+"name": "course_versions",
+"target_entity": "CourseVersion",
+"cardinality": "1:N"
+}
+],
+"fsm": {
+"state_attribute": "status",
+"initial_state": "DRAFT",
+"states": [
+"DRAFT",
+"AVAILABLE",
+"WITHDRAWN"
+],
+"transitions": [
+{
+"trigger": "publish_course",
+"source_state": "DRAFT",
+"target_state": "AVAILABLE",
+"guards": [
+"at_least_one_published_course_version_linked"
+]
+},
+{
+"trigger": "withdraw_course",
+"source_state": "AVAILABLE",
+"target_state": "WITHDRAWN",
+"guards": [
+"enrolled_students_not_impacted"
+]
+}
+]
+}
+},
+{
+"name": "CourseVersion",
+"tableName": "course_versions",
+"attributes": [
+{
+"name": "id",
+"type": "uuid",
+"primary_key": true
+},
+{
+"name": "course_id",
+"type": "uuid"
+},
+{
+"name": "version_number",
+"type": "str"
+},
+{
+"name": "status",
+"type": "str"
+}
+],
+"relationships": [
+{
+"name": "modules",
+"target_entity": "Module",
+"cardinality": "1:N"
+},
+{
+"name": "study_plan_templates",
+"target_entity": "StudyPlanTemplate",
+"cardinality": "1:N"
+}
+],
+"fsm": {
+"state_attribute": "status",
+"initial_state": "IN_DEVELOPMENT",
+"states": [
+"IN_DEVELOPMENT",
+"ACTIVE",
+"DEPRECATED"
+],
+"transitions": [
+{
+"trigger": "activate_version",
+"source_state": "IN_DEVELOPMENT",
+"target_state": "ACTIVE",
+"guards": [
+"modules_lessons_and_valid_assets_present"
+]
+},
+{
+"trigger": "deprecate_version",
+"source_state": "ACTIVE",
+"target_state": "DEPRECATED"
+}
+]
+}
+},
+{
+"name": "Module",
+"tableName": "modules",
+"attributes": [
+{
+"name": "id",
+"type": "uuid",
+"primary_key": true
+},
+{
+"name": "course_version_id",
+"type": "uuid"
+},
+{
+"name": "title",
+"type": "str"
+},
+{
+"name": "sequence_order",
+"type": "int"
+}
+],
+"relationships": [
+{
+"name": "lessons",
+"target_entity": "Lesson",
+"cardinality": "1:N"
+}
+]
+},
+{
+"name": "Lesson",
+"tableName": "lessons",
+"attributes": [
+{
+"name": "id",
+"type": "uuid",
+"primary_key": true
+},
+{
+"name": "module_id",
+"type": "uuid"
+},
+{
+"name": "title",
+"type": "str"
+},
+{
+"name": "content_status",
+"type": "str"
+},
+{
+"name": "duration",
+"type": "int"
+},
+{
+"name": "asset_url",
+"type": "str",
+"nullable": true
+}
+]
+},
+{
+"name": "StudyPlanTemplate",
+"tableName": "study_plan_templates",
+"attributes": [
+{
+"name": "id",
+"type": "uuid",
+"primary_key": true
+},
+{
+"name": "course_version_id",
+"type": "uuid"
+},
+{
+"name": "status",
+"type": "str"
+},
+{
+"name": "milestone_intervals",
+"type": "dict"
+}
+]
+}
+],
+"business_rules": [
+{
+"name": "published_version_required_for_publishing",
+"target_entity": "Course",
+"expression": "count(linked_published_course_versions) >= 1",
+"error_message": "At least one published course version must be linked to publish the course."
+},
+{
+"name": "enrolled_students_impact_validation",
+"target_entity": "Course",
+"expression": "active_enrollments_unaffected == true",
+"error_message": "Course withdrawal must not impact existing enrolled students."
+},
+{
+"name": "syllabus_completeness_validation",
+"target_entity": "CourseVersion",
+"expression": "has_modules && has_lessons && has_valid_assets",
+"error_message": "Course version must contain modules, lessons, and valid assets before activation."
+},
+{
+"name": "module_prerequisite_validation",
+"target_entity": "Module",
+"expression": "prerequisites_satisfied == true",
+"error_message": "Module lock and prerequisite conditions must be satisfied."
+}
+],
+"workflows": [
+{
+"name": "course_creation_and_metadata_drafting",
+"steps": [
+{
+"name": "submit_core_metadata",
+"action": "Instructor or Admin submits core course metadata including title, slug, description, target audience, tags, default currency, and price."
+},
+{
+"name": "validate_slug_and_generate_id",
+"action": "System validates uniqueness of course slug and generates a globally unique Course ID.",
+"depends_on": [
+"submit_core_metadata"
+]
+},
+{
+"name": "initialize_course_draft",
+"action": "System initializes course state as DRAFT and creates a default system tag for indexing.",
+"depends_on": [
+"validate_slug_and_generate_id"
+]
+}
+]
+},
+{
+"name": "course_publishing_and_availability",
+"steps": [
+{
+"name": "verify_linked_published_version",
+"action": "System verifies that at least one published Course Version is linked to the course."
+},
+{
+"name": "set_registration_window_and_publish",
+"action": "Admin sets registration window dates and changes course status from DRAFT to AVAILABLE.",
+"depends_on": [
+"verify_linked_published_version"
+]
+},
+{
+"name": "emit_course_published_event",
+"action": "System emits a CoursePublished event to update search indices and catalog caches.",
+"depends_on": [
+"set_registration_window_and_publish"
+]
+}
+]
+},
+{
+"name": "course_withdrawal",
+"steps": [
+{
+"name": "validate_student_impact",
+"action": "Admin triggers withdrawal request and system validates that existing enrolled students are not impacted."
+},
+{
+"name": "transition_to_withdrawn",
+"action": "System transitions course status to WITHDRAWN, preventing new checkout sessions.",
+"depends_on": [
+"validate_student_impact"
+]
+},
+{
+"name": "purge_catalog_search_indices",
+"action": "System purges or flags course in public catalog search indices while retaining access for active enrollments.",
+"depends_on": [
+"transition_to_withdrawn"
+]
+}
+]
+},
+{
+"name": "course_version_drafting",
+"steps": [
+{
+"name": "initiate_new_version",
+"action": "Content Author initiates a new version linked to a parent Course ID."
+},
+{
+"name": "initialize_syllabus_structure",
+"action": "System deep-copies structural nodes from prior version or initializes an empty syllabus tree.",
+"depends_on": [
+"initiate_new_version"
+]
+},
+{
+"name": "set_version_in_development",
+"action": "System sets version status to IN_DEVELOPMENT.",
+"depends_on": [
+"initialize_syllabus_structure"
+]
+}
+]
+},
+{
+"name": "syllabus_freeze_and_activation",
+"steps": [
+{
+"name": "submit_publication_check",
+"action": "Author submits version for publication check validating presence of modules, lessons, and valid assets."
+},
+{
+"name": "activate_version_and_deprecate_prior",
+"action": "System marks version state as ACTIVE and sets previous versions to DEPRECATED.",
+"depends_on": [
+"submit_publication_check"
+]
+},
+{
+"name": "attach_active_version_pointer",
+"action": "System attaches active version pointer to primary Course record for new enrollments.",
+"depends_on": [
+"activate_version_and_deprecate_prior"
+]
+}
+]
+},
+{
+"name": "module_reordering_and_structuring",
+"steps": [
+{
+"name": "create_or_reorder_modules",
+"action": "Author creates or reorders modules within a specific Course Version ID."
+},
+{
+"name": "update_sequence_and_completion_time",
+"action": "System updates ordinal sequence indices and recalculates total estimated completion time for parent version.",
+"depends_on": [
+"create_or_reorder_modules"
+]
+},
+{
+"name": "validate_module_prerequisites",
+"action": "System validates lock and prerequisite conditions between modules.",
+"depends_on": [
+"update_sequence_and_completion_time"
+]
+}
+]
+},
+{
+"name": "lesson_content_ingestion",
+"steps": [
+{
+"name": "upload_lesson_payload",
+"action": "Author uploads media, text, or quiz payload to a lesson entry within a module."
+},
+{
+"name": "trigger_media_processing",
+"action": "System triggers asynchronous media encoding and transcoding workers and returns pre-signed asset URLs.",
+"depends_on": [
+"upload_lesson_payload"
+]
+},
+{
+"name": "mark_content_ready",
+"action": "On successful processing, system marks content status as READY and updates lesson duration metrics.",
+"depends_on": [
+"trigger_media_processing"
+]
+}
+]
+},
+{
+"name": "study_plan_pacing_profile_generation",
+"steps": [
+{
+"name": "define_milestone_intervals",
+"action": "Author defines milestone intervals such as weekly targets and relative day offsets against a Course Version."
+},
+{
+"name": "map_lessons_to_completion_days",
+"action": "System maps each lesson in the version to a recommended relative completion day.",
+"depends_on": [
+"define_milestone_intervals"
+]
+},
+{
+"name": "publish_and_bind_template",
+"action": "Template is flagged as PUBLISHED and bound to the active Course Version.",
+"depends_on": [
+"map_lessons_to_completion_days"
+]
+}
+]
+}
+],
+"policies": [
+{
+"name": "course_administration_policy",
+"roles": [
+"admin",
+"instructor"
+],
+"actions": [
+"create_course",
+"publish_course",
+"withdraw_course"
+]
+},
+{
+"name": "content_authoring_policy",
+"roles": [
+"content_author"
+],
+"actions": [
+"create_course_version",
+"activate_course_version",
+"reorder_modules",
+"ingest_lesson_content",
+"create_study_plan_template"
+]
+}
+]
+}
+
