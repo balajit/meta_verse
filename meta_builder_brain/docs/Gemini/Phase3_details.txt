@@ -1,0 +1,169 @@
+### Meta Builder Project
+-- Phase 1 - meta_compiler - initial implementation completed
+-- Phase 2 - meta_polymorph - initial implementation completed
+Phase 3
+
+### Goal:Automate schema and workflow generation from input schemas, raw documents, RFCs, and text instructions.
+
+### Detailed Design
+
+### 1. Ingestion & Normalization Worker
+
+    FastAPI Ingestion Gateway:** An asynchronous API entry point receiving raw RFC payloads and standard documents from the Spec & RFC Ingestion Bus. This service handles webhook events from upstream portals and delegates processing to async worker queues.
+    Playwright Scraping Engine:** A containerized headless browser pool executing extraction scripts to scrape dynamic standards portals. It isolates raw DOM content and normalizes it into standardized HTML blocks.
+    Document Partitioning Pipeline:** Integrates PyMuPDF for structural PDF merging and Docling to partition complex tables and unstructured text into clean, hierarchical markdown trees.
+
+### 2. LLM Orchestrator & Synthesis Engine
+
+    gent Harness & MCP Integration:** Utilizes a single-agent architecture (e.g., the Hermes Agent Framework) integrated with the Model Context Protocol (MCP) to dynamically fetch necessary sub-schemas during the generation pass.
+    Concurrency Controller:** Employs `asyncio` semaphores to tightly manage the thinking budget and rate-limit concurrent outbound requests to LLM endpoints.
+    Structured Generation:** Interfaces with models like Qwen or Claude via the Anthropic SDK, enforcing explicit JSON schema generation to guarantee syntactically valid YAML/JSON outputs.
+
+
+### 3. Dynamic Validation & Policy Guardrails
+
+    Pydantic Retry Loop:** Maps generated JSON directly against strongly-typed Pydantic validation models. Any schema validation failure automatically synthesizes a correction prompt, feeding the exact error trace back to the LLM for resolution.
+    OPA Sidecar Service:** Deploys an Open Policy Agent (OPA) sidecar operating as a localized container to intercept all validation requests prior to namespace registration.
+    Rego Policy Evaluator:** Executes custom Rego logic to evaluate structural decisions, ensuring synthesized FSM lifecycle definitions and inheritance graphs do not illegally overwrite global base attributes.
+
+
+
+### 4. Meta-Runtime Storage & Configuration
+
+    Metaclass Schema Compiler:** Leverages custom Python metaclass ORM structures and strict SQLAlchemy naming conventions to handle dynamic database migrations and store compiled task graphs.
+    OpenBao Secrets Manager:** A dedicated OpenBao server container handling all runtime credential provisioning, securing database authentication tokens and external API keys.
+    Docker Compose Mesh:** Orchestrates the multi-stage pipeline, linking the ingestion services, OPA sidecars, PostgreSQL instances, and MinIO storage into a cohesive deployment environment.
+----
+
+User Input: As a principal architect at Google, create the level 1-4 diagrams for this phase.
+Decide the name for this module and the required components and show the details in the diagrams. Instead of text, create the drawings.
+
+
+Gemini Design:
+
+Here are the C4 architectural diagrams detailing the implementation for Phase 3. The module is formally named the **Meta-Builder Brain**, serving as the generative engine to automate schema and workflow generation from input schemas, raw documents, RFCs, and text instructions.
+
+### Level 1: System Context Diagram
+
+This level illustrates the Meta-Builder Brain's relationship with external actors, upstream data sources, and cloud-based or local execution endpoints.
+
+```text
+ ┌────────────────┐       ┌───────────────────────────┐       ┌────────────────┐
+ │ Upstream       │       │                           │       │ External LLM   │
+ │ Standards      │       │                           │       │ Endpoints      │
+ │ Portals /      ├──────►│    Meta-Builder Brain     ├──────►│ (Qwen, Claude) │
+ │ Local RFCs     │       │    (Generative Engine)    │       │                │
+ └────────────────┘       │                           │       └────────────────┘
+                          └─────────────┬─────────────┘
+                                        │
+                                        ▼
+                          ┌───────────────────────────┐
+                          │ Output: Compiled          │
+                          │ Task Graphs & DB Schemas  │
+                          └───────────────────────────┘
+
+```
+
+The system acts as the centralized broker, receiving webhook events from upstream portals and executing structured generation via interfaces like the Anthropic SDK.
+
+---
+
+### Level 2: Container Diagram
+
+This level zooms into the Meta-Builder Brain to reveal the four primary subsystems deployed within a unified Docker Compose Mesh.
+
+```text
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │                           Docker Compose Mesh                              │
+ │                                                                            │
+ │  ┌───────────────────────┐         ┌─────────────────────────────────┐     │
+ │  │ 1. Ingestion Worker   │         │ 2. Synthesis Engine             │     │
+ │  │ [FastAPI / Playwright]│         │ [Python / Hermes / MCP]         │     │
+ │  │ Receives raw RFCs and │────────►│ Manages thinking budget and     │     │
+ │  │ normalizes DOM/PDFs   │         │ enforces explicit JSON schemas  │     │
+ │  └───────────┬───────────┘         └───────────────┬─────────────────┘     │
+ │              │                                     │                       │
+ │              ▼                                     ▼                       │
+ │  ┌───────────────────────┐         ┌─────────────────────────────────┐     │
+ │  │ 4. Meta-Runtime Store │         │ 3. Validation Guardrails        │     │
+ │  │ [SQLAlchemy/Postgres] │◄────────┤ [Pydantic / OPA / Rego]         │     │
+ │  │ Executes migrations   │         │ Intercepts validation requests  │     │
+ │  │ and stores task graphs│         │ prior to namespace registration │     │
+ │  └───────────┬───────────┘         └─────────────────────────────────┘     │
+ │              │                                                             │
+ │  ┌───────────▼───────────┐                                                 │
+ │  │ OpenBao Secrets Mgr   │                                                 │
+ │  │ Secures DB tokens     │                                                 │
+ │  └───────────────────────┘                                                 │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+The Docker Compose Mesh orchestrates the multi-stage pipeline, linking the ingestion services, PostgreSQL instances, MinIO storage, and OPA sidecars into a cohesive deployment environment. A dedicated OpenBao server container handles all runtime credential provisioning, securing database authentication tokens and external API keys.
+
+---
+
+### Level 3: Component Diagram (Ingestion & Synthesis Focus)
+
+This level breaks down the internal components of the Ingestion Worker and the LLM Orchestrator to show the document partitioning and rate-limiting execution flow.
+
+```text
+ ┌─────────────────────────── Ingestion Worker ───────────────────────────────┐
+ │  ┌────────────────┐   Delegates   ┌─────────────────────────────────────┐  │
+ │  │ FastAPI        │──────────────►│ Async Worker Queue                  │  │
+ │  │ Ingestion      │               └─┬─────────────────────────────────┬─┘  │
+ │  │ Gateway        │                 │                                 │    │
+ │  └────────────────┘                 ▼                                 ▼    │
+ │                              ┌───────────────┐               ┌──────────┐  │
+ │                              │ Playwright    │               │ PyMuPDF &│  │
+ │                              │ Scraping Pool │               │ Docling  │  │
+ │                              └──────┬────────┘               └────┬─────┘  │
+ └─────────────────────────────────────┼─────────────────────────────┼────────┘
+                                       ▼                             ▼
+ ┌────────────────────────── Synthesis Engine ───────────────────────────────┐
+ │  ┌────────────────┐         ┌───────────────┐        ┌────────────────┐   │
+ │  │ Model Context  │◄────────┤ Agent Harness │───────►│ asyncio        │   │
+ │  │ Protocol (MCP) │         │ (Hermes)      │        │ Concurrency    │   │
+ │  └────────────────┘         └───────┬───────┘        │ Controller     │   │
+ │                                     │                └────────┬───────┘   │
+ │                                     ▼                         │           │
+ │                             ┌────────────────┐                │           │
+ │                             │ Anthropic SDK  │◄───────────────┘           │
+ │                             └────────────────┘                            │
+ └───────────────────────────────────────────────────────────────────────────┘
+
+```
+
+The FastAPI Ingestion Gateway serves as an asynchronous API entry point receiving raw RFC payloads from the Spec & RFC Ingestion Bus. The Playwright Scraping Engine operates as a containerized headless browser pool to scrape dynamic standards portals, while the Document Partitioning Pipeline integrates PyMuPDF and Docling to partition unstructured text into clean, hierarchical markdown trees. Inside the synthesis engine, the Agent Harness utilizes a single-agent architecture integrated with MCP to dynamically fetch necessary sub-schemas. The Concurrency Controller employs asyncio semaphores to tightly manage the thinking budget and rate-limit concurrent outbound requests to LLM endpoints.
+
+---
+
+### Level 4: Code/Class Diagram (Validation & Storage Focus)
+
+This level maps the specific class-level interactions between the strict validation retry loops and the dynamic database compilers.
+
+```text
+ +-------------------------+           +--------------------------+
+ | Pydantic Retry Loop     |           | OPA Sidecar Service      |
+ +-------------------------+           +--------------------------+
+ | + validate_manifest()   |---------->| + intercept_request()    |
+ | + synthesize_prompt()   |           | + execute_rego_policy()  |
+ | + feed_error_trace()    |<--Fail----|                          |
+ +-----------+-------------+           +--------------------------+
+             | Pass
+             ▼
+ +-------------------------+           +--------------------------+
+ | MetaclassSchemaCompiler |<|---------| SQLAlchemyBaseNaming     |
+ +-------------------------+           +--------------------------+
+ | + __new__(cls, name,..) |           | + migrate_db_schema()    |
+ | + build_orm_structure() |---------->| + store_task_graph()     |
+ +-------------------------+           +--------------------------+
+
+```
+
+The Pydantic Retry Loop maps generated JSON directly against strongly-typed Pydantic validation models, automatically synthesizing a correction prompt and feeding the exact error trace back to the LLM for resolution upon failure. The OPA Sidecar Service operates as a localized container to intercept all validation requests, where the Rego Policy Evaluator executes custom logic to ensure synthesized inheritance graphs do not illegally overwrite global base attributes. Finally, the Metaclass Schema Compiler leverages custom Python metaclass ORM structures and strict SQLAlchemy naming conventions to handle dynamic database migrations and store compiled task graphs.
+
+---
+User Input: Consider along with pdfs, texts and rfcs, hosted schemas from API servers and API specifications in openAPI spec or JSON formats.
+Now as a senior engineer, design the directory structures and files needed with descriptions.
+

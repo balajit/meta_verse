@@ -1,0 +1,274 @@
+# REFERENCE.md
+
+## Section 1: System Overview & Architectural Boundaries
+
+### 1. Core Purpose
+
+`meta_builder_brain` (v0.1.0) is a specialized execution and governance engine for dynamic JSON Schema synthesis, blueprint registration, and multi-tenant compilation pipelines. It resolves component metadata through a structured URN namespace (`urn:meta:bcr:<namespace>:<component>:<version>`), enforces enterprise compliance using Open Policy Agent (OPA) HTTP sidecars, computes topological execution orders over Directed Acyclic Graphs (DAGs), and ensures auditability and state persistence using `asyncpg`.
+
+### 2. Separation of Concerns
+
+* **Library Domain**:
+* Parsing, structure validation, and segment extraction for Blueprint URNs.
+* Dependency resolution and topological sorting using NetworkX.
+* Async HTTP evaluation of Rego policies via OPA integration.
+* Ingestion and conversion of RFC text and OpenAPI specs into canonical JSON Schemas.
+* Dynamic creation of SQLAlchemy ORM models at runtime via metaclasses.
+* Execution of transactional persistence, Compare-And-Set (CAS) state mutations, and audit logging using `asyncpg`.
+
+
+* **Host Application Runtime Responsibility**:
+* Connection pool lifecycle management (`DatabasePoolManager`) and underlying PostgreSQL driver initialization.
+* Execution of DDL scripts and Alembic database schema migrations.
+* Environment variable parsing and secrets retrieval using `BrainSettings`.
+* Wire-up and dependency injection overrides for FastAPI routes (`get_repository`, `get_mutator`, `get_orchestrator`).
+* Supplying active compiler runtime engines (`MetaCompiler`) to orchestrator build routines.
+
+
+
+### 3. Dependency Footprint
+
+* **Primary Dependencies**:
+* `fastapi`: Async web framework hosting governance and compilation REST endpoints.
+* `pydantic`: Schema validation, type safety, and setting management.
+* `sqlalchemy`: Expression language and dynamic metaclass model construction.
+* `asyncpg`: High-performance asynchronous PostgreSQL database driver.
+* `httpx`: Async HTTP client powering communication with OPA sidecars.
+* `networkx`: In-memory graph algorithms for DAG execution order and cycle checking.
+* `playwright`: Headless browser automation for retrieving dynamic OpenAPI schemas.
+* `aiofiles`: Non-blocking file I/O operations for local manifest and schema caching.
+* `meta-telemetry`: Enterprise OpenTelemetry tracing and metric instrumentation.
+* `meta-config`: Internal configuration parsing utilities.
+* `meta_compiler`: Core compilation engine injected into `BuildOrchestrator`.
+
+
+* **Transitive Optimization**:
+Transitive dependencies are kept to a minimum by leveraging Python standard library utilities (`ast`, `importlib`, `asyncio`, `typing`) and executing low-level raw SQL queries via `asyncpg` drivers for JSONB manipulation rather than incurring heavy ORM runtime overhead during execution paths.
+
+---
+
+## Section 2: Exported Public API Reference
+
+*Note: In `meta_builder_brain` v0.1.0, `__init__.py` is intentionally empty. All symbols must be imported directly from their canonical submodules.*
+
+### 1. Public API Summary Table
+
+| Symbol | Import Path | Type | Description | Async Safe |
+| --- | --- | --- | --- | --- |
+| `BrainSettings` | `meta_builder_brain.config` | Class | Centralized Pydantic settings with OpenBao & OPA configuration | Sync |
+| `bootstrap_configuration` | `meta_builder_brain.config` | Function | Instantiates `BrainSettings` with `ConfigurationError` handling | Sync |
+| `TreeResolver` | `meta_builder_brain.dag_engine` | Class | Parses URNs and builds validated component DAGs | Sync |
+| `ComponentDAGEngine` | `meta_builder_brain.dag_engine` | Class | NetworkX-backed topological sort and dependency lineage graph | Sync |
+| `OPAEvaluator` | `meta_builder_brain.governance.opa` | Class | Async HTTP sidecar client for Rego policy evaluation | **Async** |
+| `HermesSynthesisAgent` | `meta_builder_brain.ingestion.hermes` | Class | Synthesizes canonical JSON schemas from raw RFC text | **Async** |
+| `PlaywrightSchemaScraper` | `meta_builder_brain.ingestion.scraper` | Class | Headless browser scraper for OpenAPI definitions | **Async** |
+| `LineageClosureResolver` | `meta_builder_brain.lineage.closure` | Class | Transitive ancestor/descendant closure path calculator | **Async** |
+| `CacheGuard` | `meta_builder_brain.lineage.cache` | Class | Thread/async-safe lockable in-memory lineage cache | **Async** |
+| `BuildOrchestrator` | `meta_builder_brain.orchestrator` | Class | Coordinates schema resolution, policy, compiler, & persistence | **Async** |
+| `DatabasePoolManager` | `meta_builder_brain.persistence.mbb_pool` | Class | Asyncpg connection pool lifecycle and schema DDL manager | **Async** |
+| `EntityRepository` | `meta_builder_brain.persistence.mbb_repository` | Class | Read-only data access layer for specs, builds, & closures | **Async** |
+| `DatabaseMutator` | `meta_builder_brain.persistence.mbb_mutator` | Class | Write-only persistence layer handling CAS, audits, & upserts | **Async** |
+| `DynamicMetaclassBuilder` | `meta_builder_brain.persistence.orm_builder` | Class | Runtime metaclass factory for dynamic SQLAlchemy models | Sync |
+| `bootstrap_application` | `meta_builder_brain.main` | Function | Initializes pools, executes DDL, & constructs service container | **Async** |
+
+### 2. Class & Function Signatures
+
+#### `TreeResolver.validate_urn(urn: str) -> Dict[str, str]`
+
+Parses a Blueprint URN formatted as `urn:meta:bcr:<namespace>:<component>:<version>`. Returns a dictionary containing parsed URN segments (`scheme`, `domain`, `type`, `namespace`, `component`, `version`). Raises `InvalidURNError` if segment parsing fails.
+
+#### `TreeResolver.build_and_validate_dag(components: Dict[str, List[str]]) -> DAGGraph`
+
+Validates component identifiers and dependency URN lists. Constructs an in-memory graph and calculates the execution hierarchy. Returns a `DAGGraph` instance with attribute `execution_order: List[str]`. Raises `DAGCycleError` or `InvalidURNError`.
+
+#### `BuildOrchestrator.compile_blueprint_namespace(namespace_id: str, components: Dict[str, Any], spec_deltas: Dict[str, Any], base_schemas: Dict[str, Any], job_id: Optional[str] = None, session: Any = None) -> Dict[str, Any]`
+
+Evaluates governance policies over HTTP, merges target specification deltas with base JSON schemas, and prepares schema manifests for compilation. Returns a compiled schema map.
+
+#### `BuildOrchestrator.execute_build_job(tenant_id: str, manifest_urn: str, execution_graph: Dict[str, Any]) -> BuildJobAuditRecord`
+
+Orchestrates a full build lifecycle by invoking the underlying `MetaCompiler`, persisting intermediate state, and generating an audit trail. Returns a `BuildJobAuditRecord`. Raises `BuildExecutionError`.
+
+#### `DatabaseMutator.upsert_specification(record: SpecificationRecord) -> SpecificationRecord`
+
+Executes an atomic PostgreSQL `ON CONFLICT (urn) DO UPDATE` query to store or update specification records. Returns the updated `SpecificationRecord`.
+
+#### `DatabaseMutator.create_idempotency_key(key: str, expires_at: datetime) -> bool`
+
+Executes an atomic Compare-And-Set operation to record an `IN_PROGRESS` key state in PostgreSQL. Returns `True` if the key was successfully acquired, or `False` if the key already exists.
+
+### 3. Exception Hierarchy Reference
+
+```
+MetaBuilderBrainError (message: str, payload: Optional[Any])
+├── ConfigurationError
+├── TelemetryInitError
+├── DAGEngineError
+│   ├── DAGCycleError
+│   ├── DAGNodeNotFoundError
+│   ├── EmptyDAGError
+│   └── InvalidURNError
+├── LineageResolutionError
+├── GovernancePolicyError
+│   ├── GovernancePolicyViolationError
+│   │   └── OPAPolicyValidationError
+│   └── OPAServiceUnavailableError
+├── PersistenceError
+│   ├── DatabaseConnectionError
+│   ├── EntityNotFoundError
+│   ├── DuplicateURNError
+│   ├── TransactionRollbackError
+│   ├── UnsupportedTypeMappingError
+│   ├── CASLockError
+│   ├── IdempotencyError
+│   │   └── IdempotencyConflictError
+│   ├── SagaError
+│   └── MigrationError
+└── IngestionError
+    └── HermesSynthesisError
+└── BuildExecutionError
+
+```
+
+---
+
+## Section 3: Canonical Integration Patterns
+
+### Pattern 1: Application Lifecycle & Persistence Bootstrapping
+
+```python
+import asyncio
+from typing import Tuple
+from meta_builder_brain.config import bootstrap_configuration
+from meta_builder_brain.persistence.mbb_pool import DatabasePoolManager
+from meta_builder_brain.persistence.mbb_repository import EntityRepository
+from meta_builder_brain.persistence.mbb_mutator import DatabaseMutator
+
+async def initialize_system() -> Tuple[DatabasePoolManager, EntityRepository, DatabaseMutator]:
+    settings = bootstrap_configuration()
+
+    # Initialize connection pool
+    pool_mgr = DatabasePoolManager(
+        dsn=settings.database_url,
+        min_size=5,
+        max_size=20,
+        command_timeout=30.0
+    )
+    await pool_mgr.init_pool()
+
+    # Bootstrap DDL schema if needed
+    await pool_mgr.execute_ddl("src/meta_builder_brain/persistence/mbb_schema.sql")
+
+    pool = pool_mgr.get_pool()
+    repo = EntityRepository(pool=pool)
+    mutator = DatabaseMutator(pool=pool)
+
+    return pool_mgr, repo, mutator
+
+```
+
+### Pattern 2: Blueprint URN Parsing & DAG Topological Sorting
+
+```python
+from typing import Dict, List
+from meta_builder_brain.dag_engine import TreeResolver
+from meta_builder_brain.exceptions import DAGCycleError, InvalidURNError
+
+components_manifest: Dict[str, List[str]] = {
+    "urn:meta:bcr:global:user_service:v1.0": ["urn:meta:bcr:global:auth_base:v1.0"],
+    "urn:meta:bcr:global:auth_base:v1.0": [],
+}
+
+try:
+    dag_graph = TreeResolver.build_and_validate_dag(components_manifest)
+    print("Execution order:", dag_graph.execution_order)
+    # Output: ['urn:meta:bcr:global:auth_base:v1.0', 'urn:meta:bcr:global:user_service:v1.0']
+except InvalidURNError as err:
+    print(f"URN schema format invalid: {err}")
+except DAGCycleError as err:
+    print(f"Dependency cycle detected: {err.payload}")
+
+```
+
+### Pattern 3: FastAPI Dependency Injection Override
+
+```python
+from fastapi import FastAPI, Depends
+from meta_builder_brain.api.routes import router as brain_router, get_repository, get_mutator
+from meta_builder_brain.persistence.mbb_repository import EntityRepository
+from meta_builder_brain.persistence.mbb_mutator import DatabaseMutator
+
+app = FastAPI()
+app.include_router(brain_router)
+
+# Override placeholder dependency providers during host app lifecycle
+def setup_routes(repo_instance: EntityRepository, mutator_instance: DatabaseMutator) -> None:
+    app.dependency_overrides[get_repository] = lambda: repo_instance
+    app.dependency_overrides[get_mutator] = lambda: mutator_instance
+
+```
+
+### Pattern 4: OPA Policy Guardrail Check & Orchestration
+
+```python
+from typing import Any
+from meta_builder_brain.config import BrainSettings
+from meta_builder_brain.orchestrator import BuildOrchestrator
+from meta_builder_brain.persistence.mbb_repository import EntityRepository
+from meta_builder_brain.persistence.mbb_mutator import DatabaseMutator
+from meta_builder_brain.exceptions import OPAPolicyValidationError, OPAServiceUnavailableError
+
+async def run_orchestrated_compile(repo: EntityRepository, mutator: DatabaseMutator) -> None:
+    settings = BrainSettings(OPA_SIDECAR_URL="http://localhost:8181/v1/data")
+    orchestrator = BuildOrchestrator(repository=repo, mutator=mutator)
+
+    try:
+        audit_record = await orchestrator.execute_build_job(
+            tenant_id="tenant_acme",
+            manifest_urn="urn:meta:bcr:acme:billing_schema:v1.2",
+            execution_graph={"nodes": ["urn:meta:bcr:acme:billing_schema:v1.2"]}
+        )
+        print("Build Job Completed:", audit_record.job_id, audit_record.status)
+    except OPAPolicyValidationError as err:
+        print(f"Governance Check Denied Build: {err}")
+    except OPAServiceUnavailableError as err:
+        print(f"OPA Sidecar Unreachable: {err}")
+
+```
+
+---
+
+## Section 4: Edge Cases, Failure Modes & Anti-Patterns
+
+### Non-Obvious Runtime Behaviors & Safeguards
+
+> **WARNING: Uninitialized Connection Pools**
+> Calling `pool_manager.get_pool()` before awaiting `pool_manager.init_pool()` raises `DatabaseConnectionError`. Always invoke `init_pool()` during application bootstrap before attempting repository or mutator data access.
+
+> **WARNING: FastAPI Router Unwired Dependencies**
+> The default dependency injection providers in `meta_builder_brain.api.routes` (`get_repository`, `get_mutator`, `get_orchestrator`) raise `NotImplementedError` if invoked directly. Host applications MUST explicitly override these routes using FastAPI's `app.dependency_overrides` dictionary before handling incoming HTTP requests.
+
+> **WARNING: Strict URN Structure**
+> `TreeResolver.validate_urn` mandates an exact 6-part colon-delimited string layout starting with the exact prefix `urn:meta:bcr:`. Any variation—such as missing semantic version identifiers, omitted namespaces, or malformed prefixes—will trigger an immediate `InvalidURNError`.
+
+### Explicit Anti-Patterns
+
+#### 1. Blocking the Async Event Loop with Dynamic ORM Models
+
+* **Anti-Pattern**: Invoking `DynamicMetaclassBuilder.create_orm_model(...)` inside a synchronous, CPU-bound execution loop within high-throughput request paths.
+* **Correction**: Pre-compile dynamic ORM class structures during application startup or cache model metadata using `CacheGuard`.
+
+#### 2. Bypassing Idempotency Guarantees
+
+* **Anti-Pattern**: Executing mutation queries or build commands directly without validating state via `DatabaseMutator.create_idempotency_key(...)`.
+* **Correction**: Always register and acquire an idempotency key with an explicit expiration datetime (`expires_at`) before triggering execution jobs.
+
+#### 3. Ignoring OPA HTTP Service Downtime
+
+* **Anti-Pattern**: Assuming `OPAEvaluator.evaluate_policy` returns `False` or gracefully defaults to denial during network issues or container restarts.
+* **Correction**: Explicitly catch `OPAServiceUnavailableError` to separate connection/transport failures from policy evaluation rejections (`OPAPolicyValidationError`).
+
+#### 4. Empty DAG Topology Processing
+
+* **Anti-Pattern**: Passing empty dependency dictionaries (`{}`) directly to `ComponentDAGEngine.compute_execution_order()`.
+* **Correction**: Ensure component manifests contain at least one valid node or catch `EmptyDAGError` prior to graph evaluation.

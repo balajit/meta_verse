@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-polymorph"
+version = "0.1.0"
+description = "Pure Python polymorphic manifest layer resolver and IR compiler"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "deepmerge>=2.0.0",
+    "meta-telemetry>=0.1.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "pydantic>=2.0.0",
+    "ruamel.yaml>=0.18.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pipdeptree>=4.2.3",
+    "pylint>=4.0.8",
+    "pytest>=8.0.0",
+]
+
+[tool.uv.sources]
+meta-telemetry = { path = "../meta-telemetry", editable = true }

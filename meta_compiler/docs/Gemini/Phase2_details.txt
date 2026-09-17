@@ -1,0 +1,509 @@
+**Phase 2 Architectural Design: Namespace Registry & Inheritance Engine**
+
+Phase 2 transitions MetaBuilder from a static DAG compiler into a polymorphic execution platform. It introduces multi-tenant hierarchy resolution, differential overriding, entity FSM state mechanics, and foundational platform manifests (Learning Platform and Commerce Platform).
+
+---
+
+**High-Level Architecture & Resolution Pipeline**
+
+```
+ [ Base / Parent Manifests ]     [ Child Variant / Overrides ]
+              │                               │
+              └───────────────┬───────────────┘
+                              │
+                              ▼
+        ┌──────────────────────────────────────────┐
+        │       1. Namespace Resolution Engine     │
+        │  (Hierarchy Hierarchy / Fallback Chains) │
+        └─────────────────────┬────────────────────┘
+                              │
+                              ▼
+        ┌──────────────────────────────────────────┐
+        │      2. Polymorphic Merge Engine         │
+        │   (Deep Structural Differential Overrides)│
+        └─────────────────────┬────────────────────┘
+                              │
+                              ▼
+        ┌──────────────────────────────────────────┐
+        │       3. Entity FSM State Engine         │
+        │  (Lifecycle Guards & State Transitions)  │
+        └─────────────────────┬────────────────────┘
+                              │
+                              ▼
+        ┌──────────────────────────────────────────┐
+        │   4. Manifest Hydrator & Registries      │
+        │     (LP / CP Domain Realization)         │
+        └──────────────────────────────────────────┘
+
+```
+
+---
+
+### **Core Functional Components**
+
+#### **1. Namespace Resolution Engine**
+
+Resolves entity definitions and workflow variants across a three-tier inheritance hierarchy: `global` $\rightarrow$ `industry` (LOB) $\rightarrow$ `custom` (Tenant/Channel).
+
+* **Namespace Tree Resolver:**
+* Computes the explicit resolution path for any target query.
+* *Resolution Order:* `custom:{tenant_id}:{channel}` $\rightarrow$ `industry:{lob_id}` $\rightarrow$ `global:default`.
+
+
+* **Inheritance Resolver & Fallback Chain:**
+* Traverses parent pointers (`extends: <namespace:version>`) sequentially.
+* Prevents circular dependency chains using depth-first graph traversal and visited sets.
+
+
+* **Namespace Cache Guard:**
+* Caches fully resolved inheritance graphs in-memory to prevent re-parsing base models during hot execution paths.
+
+
+
+---
+
+#### **2. Polymorphic Merge Engine (Differential Overrides)**
+
+Handles dynamic schema and DAG merging when a child manifest overrides a parent.
+
+* **Structural Deep Merger:**
+* Merges JSONB/Pydantic schemas using strict inheritance semantics.
+* Supports field additions, type specialization, and constraint tightening (e.g., making optional fields required in `custom`).
+
+
+* **Graph Topological Delta Compiler:**
+* Evaluates task node modifications (`ADD`, `REPLACE`, `DISABLE`, `WRAP`).
+* Re-validates DAG topological integrity after applying delta transformations to ensure no cycles are introduced.
+
+
+* **Contract Inheritance Checker:**
+* Enforces contravariance on task inputs and covariance on task outputs during inheritance overrides.
+
+
+
+---
+
+#### **3. Entity FSM State Engine**
+
+Manages domain entity lifecycle transitions independently of workflow step execution, ensuring data entities progress safely through allowed states.
+
+* **Lifecycle State Transition Guard:**
+* Enforces state machine rules (e.g., `DRAFT` $\rightarrow$ `REVIEW` $\rightarrow$ `PUBLISHED` $\rightarrow$ `ARCHIVED`).
+* Uses optimistic lock tokens to block invalid state transitions.
+
+
+* **Pre/Post-Transition Hook Registry:**
+* Triggers event side-effects (telemetry, validations, downstream notifications) upon entering or exiting specific lifecycle states.
+
+
+* **Entity State Persister:**
+* Maintains an audit log of state histories, actor citations, and payload snapshots per state change.
+
+
+
+---
+
+#### **4. Dynamic Manifest Hydrator & Manifest Realization**
+
+Loads, validates, and materializes base platform structures.
+
+* **LP (Learning Platform) Manifest Realizer:**
+* Compiles base specifications for content ingestion, parsing, vectorization, and assessment generation pipelines.
+
+
+* **CP (Commerce Platform) Manifest Realizer:**
+* Compiles base specifications for catalog ingestion, price indexing, inventory validation, and order fulfillment workflows.
+
+
+* **Versioned Schema Serializer:**
+* Persists fully compiled, polymorphic manifests to PostgreSQL with deterministic version signatures (`manifest_hash`).
+
+
+
+---
+
+### **Namespace & Manifest Resolution Design**
+
+#### **Resolution Algorithm**
+
+When a workflow execution is triggered for `tenant="acme"`, `lob="retail"`, and `channel="mobile"`:
+
+1. **Lookup Search Path:**
+`custom:acme:mobile` $\rightarrow$ `industry:retail` $\rightarrow$ `global:default`.
+2. **Fetch Tree Nodes:** Retrieve all manifest snapshots along the chain from database/registry.
+3. **Linearize & Merge:**
+* Start with `global:default` AST.
+* Apply `industry:retail` deltas.
+* Apply `custom:acme:mobile` deltas.
+
+
+4. **Compile & Register:** Produce an immutable, compiled DAG manifest runtime snapshot.
+
+---
+
+### **Entity FSM Lifecycle Transition Design**
+
+#### **Allowed State Transitions**
+
+```
+[ DRAFT ] ────────► [ UNDER_REVIEW ] ────────► [ PUBLISHED ]
+   │                       │                        │
+   │                       ▼                        ▼
+   └─────────────────► [ REJECTED ] ──────────► [ ARCHIVED ]
+
+```
+
+#### **FSM Validation Mechanics**
+
+* **Guard Matrix:** A matrix mapping `(current_state, target_state) -> List[GuardCondition]`.
+* **Atomic State Updates:**
+```sql
+UPDATE entity_instances
+SET state = :target_state, version = version + 1
+WHERE id = :entity_id AND state = :current_state AND version = :expected_version;
+
+```
+
+
+
+---
+
+### **Proposed Database Schema Additions for Phase 2**
+
+* **`meta_namespaces` Table:** Stores registered namespaces (`global`, `industry`, `custom`) and their parent references.
+* **`meta_entity_definitions` Table:** Versioned registry of domain entities, their base fields, and their polymorphic extensions.
+* **`meta_entity_fsm_rules` Table:** Defines valid `(from_state, to_state)` pairs, permissions, and validation handlers.
+* **`meta_entity_instances` Table:** Tracks live entity records, current lifecycle state, active lock tokens, and JSONB payload snapshots.
+
+---
+
+### **Phase 2 Deliverables Roadmap**
+
+1. **Namespace Engine Spec:** Finalize JSON schema format for delta overrides (`$merge`, `$patch`, `$disable`).
+2. **Entity FSM Protocol Spec:** Define Python protocol interfaces for lifecycle transition guards and hooks.
+3. **LP & CP Domain Manifest Specs:** Create initial declarative YAML manifests for standard Learning and Commerce platform workflows.
+
+---
+
+Customer Input:This is the first step of phase 2 of overall design.  No code generation needed in this phase.
+As a Google engineer, identify the open source components that are available for each of the phases/components needed to build phase2.
+for example which framework can help define and execute "Namespace Resolution Engine", "Polymorphic Merge Engine" etc
+
+Google Design:
+Here is a breakdown of open-source frameworks, libraries, and design standards suitable for each Phase 2 core component.
+
+---
+
+**1. Namespace Resolution Engine**
+
+This component requires hierarchical lookup, fallback chains, and graph dependency tracking.
+
+* **NetworkX (Python):** Ideal for constructing the directed inheritance tree (`global` $\rightarrow$ `industry` $\rightarrow$ `custom`). It handles cycle detection, topological sorting, and parent-child ancestor traversal natively.
+
+
+* **Open Policy Agent (OPA / Rego):** Can be embedded to evaluate namespace resolution rules, dynamic tenant scoping, and context-aware fallback paths based on runtime attributes (`tenant_id`, `channel`, `lob_id`).
+
+
+* **Hierarchical Configuration Libraries (e.g., Dynaconf / Hydra):** Provide built-in inheritance chains, cascading layer resolution, and environment/tenant overrides out of the box.
+
+---
+
+**2. Polymorphic Merge Engine (Differential Overrides)**
+
+This component handles AST transformations, structural JSON/Schema merging, dynamic DAG patching, and contract verification.
+
+* **JSON Patch (RFC 6902) & JSON Merge Patch (RFC 7396) Implementations (e.g., `jsonpatch` / `jsonmerge` in Python):**
+* `jsonmerge`: Provides rule-based structural schema merging (e.g., `ARRAY_MERGE`, `STRATEGY_OVERWRITE`, `$patch`).
+* `jsonpatch`: Standardized format for granular operations (`ADD`, `REPLACE`, `REMOVE`) across dynamic task nodes and entity fields.
+
+
+
+
+* **Pydantic V2 (Core Generics & Dynamic Types):** Native support for model inheritance, schema specialization, and dynamic model generation (`create_model`) to enforce type contravariance/covariance dynamically.
+
+
+* **Apache Hamilton & `h_schema`:** Validates runtime payload signatures, node dependency overrides, and contract inheritance across DAG transformations.
+
+
+
+---
+
+**3. Entity FSM State Engine**
+
+This component enforces lifecycle transitions, optimistic locking, transition guards, and audit history independently of task execution.
+
+* **Transitions / `python-statemachine`:**
+* Lightweight Python FSM libraries supporting state transition callbacks (`pre_transition`, `post_transition`), state guards, and error handling.
+
+
+
+
+* **Temporal.io (or Automata / PostgreSQL FSM Extensions):**
+* Provides durable state machine execution, deterministic state persistence, and event-driven transition guards for enterprise lifecycle workflows.
+
+
+
+
+* **SQLAlchemy + PostgreSQL (`TIMESTAMPTZ`, JSONB, Optimistic Locking):**
+* Standard stack for atomic database updates using version tokens (`version = version + 1`) and transition audit logging.
+
+
+
+
+
+---
+
+**4. Dynamic Manifest Hydrator & Manifest Realization (LP & CP Platforms)**
+
+This component handles YAML parsing, schema compilation, hash signatures, and persistence.
+
+* **Ruamel.yaml / PyYAML:** For lossless, high-performance parsing of declarative YAML manifests.
+
+
+* **JSONSchema (Draft 2020-12):** Validates raw merged structures against platform meta-schemas prior to Pydantic instantiation.
+
+
+* **Hashlib / Canonical JSON (jcs):** For generating deterministic, cryptographic hash signatures (`manifest_hash`) for versioned persistent records.
+
+
+
+---
+
+**Open-Source Technology Selection Matrix**
+
+| Phase 2 Component | Recommended Open-Source Stack | Core Functionality Provided |
+| --- | --- | --- |
+| **Namespace Resolution Engine** | NetworkX, Dynaconf / Hydra, OPA | Hierarchy traversal, fallback chains, cycle detection
+
+ |
+| **Polymorphic Merge Engine** | `jsonmerge`, `jsonpatch`, Pydantic V2 | Deep JSON/DAG differential overrides, type bounds
+
+ |
+| **Entity FSM State Engine** | `python-statemachine`, SQLAlchemy Async | State transition guards, pre/post hooks, optimistic locking
+
+ |
+| **Manifest Hydrator & Registries** | Ruamel.yaml, JSONSchema, Hashlib | YAML compilation, schema validation, deterministic hashing
+
+ |
+
+Customer Input:  create leve 1-4 diagrams for the required functionality with the identified components
+
+Gemini Design:
+The C4 model structure below details the MetaBuilder Phase 2 architecture, mapping the required functionality to the identified open-source components.
+
+## Level 1: System Context Diagram
+
+This level illustrates how the MetaBuilder Polymorphic Execution Platform interacts with users and external execution boundaries.
+
+* **Users / Tenants:** Submit YAML configurations defining Base/Parent Manifests (e.g., LP/CP platforms) and Child Variant/Overrides.
+
+
+* **System (MetaBuilder Phase 2 Platform):** Acts as the central polymorphic execution platform.
+
+
+* Resolves multi-tenant hierarchy variants (`global` $\rightarrow$ `industry` $\rightarrow$ `custom`).
+
+
+* Enforces entity lifecycle transitions safely.
+
+
+
+
+* **External Systems:** The Legacy Pipeline and downstream executors receive fully compiled, immutable DAG manifest runtime snapshots.
+
+
+
+## Level 2: Container Diagram
+
+This level breaks the MetaBuilder platform into deployable containers and persistent stores.
+
+* **API & Hydration Service:**
+* Parses incoming declarative YAML manifests using **Ruamel.yaml**.
+
+
+* Uses **Hashlib** to generate deterministic cryptographic hash signatures (`manifest_hash`) for versioning.
+
+
+
+
+* **Namespace & Merge Engine Service:**
+* Evaluates dynamic tenant scoping and fallback paths using **Open Policy Agent (OPA)**.
+
+
+* Executes deep structural JSON/DAG differential overrides using **`jsonpatch`** and **`jsonmerge`**.
+
+
+
+
+* **Entity FSM State Engine:**
+* Manages durable state execution and event-driven transition guards, potentially utilizing **Temporal.io**.
+
+
+
+
+* **PostgreSQL Database:**
+* Stores registered namespaces in the `meta_namespaces` table.
+
+
+* Maintains the `meta_entity_definitions` versioned registry.
+
+
+* Uses atomic SQL updates (`version = version + 1`) within the `meta_entity_instances` table to track live records and lock tokens.
+
+
+* Defines valid transitions in the `meta_entity_fsm_rules` table.
+
+
+
+
+
+## Level 3: Component Diagram
+
+Focusing inside the **Namespace & Merge Engine Service** to show the specific open-source component interactions.
+
+* **Namespace Tree Resolver:** Constructs a directed inheritance tree and detects cycles using **NetworkX**.
+
+
+* **Hierarchical Configuration Guard:** Provides cascading layer resolution using **Dynaconf** or **Hydra**.
+
+
+* **Structural Deep Merger:** Applies granular task node modifications (`ADD`, `REPLACE`, `DISABLE`, `WRAP`) using **`jsonpatch`**.
+
+
+* **Dynamic Schema Compiler:** Instantiates native **Pydantic V2** models to enforce type contravariance/covariance dynamically after structural merges.
+
+
+* **Contract Checker:** Validates runtime payload signatures and node dependency overrides across the newly transformed DAG using **Apache Hamilton**.
+
+
+* **Raw Validator:** Validates the pre-instantiation merged structures against platform meta-schemas using **JSONSchema**.
+
+
+
+## Level 4: Code Diagram (Logical Structure)
+
+This level highlights the internal logic and protocol definitions for the core state and merging mechanics.
+
+* **`NamespaceResolver` Class:**
+* Interfaces with `NetworkX.DiGraph` to compute explicit lookup search paths.
+
+
+* Implements fallback chaining: `custom:{tenant_id}:{channel}` $\rightarrow$ `industry:{lob_id}` $\rightarrow$ `global:default`.
+
+
+
+
+* **`LifecycleStateGuard` Class:**
+* Utilizes **`python-statemachine`** to enforce strict guard matrices.
+
+
+* Prevents invalid flow by validating transitions such as `DRAFT` $\rightarrow$ `UNDER_REVIEW` $\rightarrow$ `PUBLISHED`.
+
+
+* Rejects invalid jumps using pre-transition and post-transition callbacks.
+
+
+
+
+* **`EntityStatePersister` Class:**
+* Uses **SQLAlchemy Async** to map state updates directly to PostgreSQL `TIMESTAMPTZ` and JSONB structures while maintaining the audit log.
+
+-----
+
+Customer Input:  Create the component directory structure with file names.
+
+Gemini Design:
+
+The component directory structure for Phase 2 (`meta_compiler`) maps directly to the C4 Level 1–4 specifications and the identified open-source components.
+
+```text
+meta_compiler/
+├── README.md
+├── pyproject.toml
+├── config/
+│   ├── settings.py                         # Dynaconf / Hydra configuration management
+│   └── opa_policies/
+│       └── namespace_resolution.rego       # Open Policy Agent rules for dynamic tenant scoping
+│
+├── core/
+│   ├── __init__.py
+│   ├── exceptions.py                       # Custom FSM, merge, & resolution exception hierarchy
+│   └── types.py                            # Core type aliases, Enums (States, Ops, Levels)
+│
+├── namespace/                              # 1. Namespace Resolution Engine
+│   ├── __init__.py
+│   ├── models.py                           # Pydantic schemas for Namespace Nodes & Paths
+│   ├── tree_resolver.py                    # NetworkX DiGraph inheritance tree & cycle guard
+│   ├── fallback_chain.py                   # Custom/Industry/Global resolution path evaluator
+│   └── cache_guard.py                      # In-memory resolution path caching layer
+│
+├── merger/                                 # 2. Polymorphic Merge Engine
+│   ├── __init__.py
+│   ├── deep_merger.py                      # jsonmerge & jsonpatch structural delta applicator
+│   ├── dag_delta_compiler.py               # Graph transformation compiler (ADD, REPLACE, DISABLE, WRAP)
+│   ├── dynamic_schema_builder.py           # Pydantic V2 dynamic model factory (create_model)
+│   └── contract_checker.py                 # Apache Hamilton signature & contravariance/covariance enforcer
+│
+├── fsm/                                    # 3. Entity FSM State Engine
+│   ├── __init__.py
+│   ├── models.py                           # Pydantic models for FSM rules, transitions, & events
+│   ├── lifecycle_guard.py                  # python-statemachine wrapper & Guard Matrix evaluator
+│   ├── hooks.py                            # Pre/Post transition side-effect hook registry
+│   └── state_persister.py                  # SQLAlchemy Async atomic updates (version = version + 1)
+│
+├── hydrator/                               # 4. Dynamic Manifest Hydrator & Manifest Realization
+│   ├── __init__.py
+│   ├── yaml_parser.py                      # Ruamel.yaml lossless AST manifest parser
+│   ├── schema_validator.py                 # JSONSchema (Draft 2020-12) pre-instantiation validator
+│   ├── hasher.py                           # Hashlib / Canonical JSON deterministic hash builder
+│   └── realizers/
+│       ├── __init__.py
+│       ├── base_realizer.py                # Abstract Base Realizer protocol
+│       ├── lp_realizer.py                  # Learning Platform domain manifest realizer
+│       └── cp_realizer.py                  # Commerce Platform domain manifest realizer
+│
+├── db/                                     # Database Layer
+│   ├── __init__.py
+│   ├── session.py                          # SQLAlchemy Async engine and session factory
+│   └── models/
+│       ├── __init__.py
+│       ├── namespaces.py                   # meta_namespaces SQLAlchemy table definition
+│       ├── entity_definitions.py           # meta_entity_definitions SQLAlchemy table definition
+│       ├── entity_fsm_rules.py             # meta_entity_fsm_rules SQLAlchemy table definition
+│       └── entity_instances.py             # meta_entity_instances SQLAlchemy table definition
+│
+├── manifests/                              # Declarative YAML Manifest Specifications
+│   ├── global/
+│   │   └── default_entity_base.yaml        # Base entity definitions
+│   ├── industry/
+│   │   ├── learning_platform_base.yaml     # LP platform domain base manifest
+│   │   └── commerce_platform_base.yaml     # CP platform domain base manifest
+│   └── custom/
+│       └── acme_mobile_override.yaml       # Example child tenant override manifest
+│
+└── tests/
+    ├── __init__.py
+    ├── test_namespace_resolution.py
+    ├── test_polymorphic_merger.py
+    ├── test_entity_fsm.py
+    └── test_manifest_hydration.py
+
+```
+
+---
+
+### **Directory Mapping to Open-Source Stack**
+
+* **`namespace/`:** Utilizes **NetworkX** inside `tree_resolver.py` for DAG inheritance graph logic and **OPA** in `config/opa_policies/` for rule evaluation.
+
+
+* **`merger/`:** Integrates **`jsonmerge`**, **`jsonpatch`**, **Pydantic V2**, and **Apache Hamilton** across `deep_merger.py`, `dynamic_schema_builder.py`, and `contract_checker.py`.
+
+
+* **`fsm/`:** Leverages **`python-statemachine`** in `lifecycle_guard.py` and **SQLAlchemy Async** optimistic locking in `state_persister.py`.
+
+
+* **`hydrator/`:** Houses **Ruamel.yaml**, **JSONSchema**, and **Hashlib** utilities to parse, validate, and hash manifests prior to DB persistence.
+
+
+

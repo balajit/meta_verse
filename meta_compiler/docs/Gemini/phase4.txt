@@ -1,0 +1,313 @@
+### Control Plane Architecture
+
+To allow autonomous triage agents to act as first-class operators over the execution fabric, we expose control plane operations via an idempotent, capability-bounded tool interface. The agent operates within a closed-loop controller (Sense-Plan-Act-Verify) backed by distributed state machine snapshots.
+
+### Agent Tool Contracts
+
+| Tool Name | Parameters | Capabilities & Guardrails |
+| --- | --- | --- |
+| `inspect_manifest` | `run_id`, `step_id`, `depth` | Reads active graph state, node input/output artifacts, execution logs, and runtime telemetry. Read-only, zero latency impact. |
+| `retry_step` | `run_id`, `step_id`, `override_config` | Triggers isolated step execution with patched parameters (e.g., adjusted memory allocations, modified timeout bounds). Idempotency key required. |
+| `replan_dag` | `run_id`, `failed_step_id`, `mutation_spec` | Prunes dead branches, injects fallback nodes, or dynamically updates dependencies without invalidating upstream completed state. |
+
+### Self-Healing & Operational Triage Loop
+
+The agent loop intercepts runtime failures via a pub/sub event handler (`WorkflowStepFailed`) and executes four operational phases:
+
+1. **Telemetry & Manifest Context Gathering**
+* The triage agent calls `inspect_manifest` to pull execution context, stack trace, resource utilization metrics, and upstream dependency metadata.
+
+
+2. **Failure Classification & Root-Cause Diagnosis**
+* *Transient Infrastructure Error* (e.g., OOM, network timeout): Route to parameter mutation.
+* *Deterministic Data Error* (e.g., schema mismatch, invalid spatial asset): Route to DAG replanning.
+* *Unrecoverable Invariant Violation* (e.g., missing security context): Route to human escalation.
+
+
+3. **Action Execution**
+* **Localized Repair:** Issues `retry_step` with tuned hyperparameters (e.g., doubling memory limits or switching compute target from CPU to GPU).
+* **Graph Mutation:** Issues `replan_dag` to inject an alternative asset-baking node or bypass non-critical visualization steps.
+
+
+4. **Post-Action Verification & Feedback Sync**
+* Monitors step recovery over an execution window. If the mutation succeeds, update global hyperparameter heuristics in the shared control plane cache.
+
+
+
+### Automated Escalation & Parameter Tuning Matrix
+
+| Failure Mode | Autonomous Remediation Strategy | Escalation Threshold |
+| --- | --- | --- |
+| **OOM / Out of Resource** | Step Retry with $1.5\times$ RAM/VRAM allocation via `override_config`. | Max 2 retries; escalate to DevOps on 3rd failure. |
+| **Stale / Corrupted Dependency** | DAG Replan: Insert dynamic validation/re-fetch node upstream. | Escalate if dynamic patch exceeds max runtime budget ($>300\text{s}$). |
+| **Non-Convergent Optimization** | Parameter Tuning: Decay learning rate / adjust solver tolerance vectors. | Max 3 tuning iterations before flagging model drift. |
+| **Permission / Auth Failure** | **No Retry.** Immediate escalation. | Instant notification to Ops with token diagnostic context. |
+
+
+---
+User Input:  Create an implementation plan and identify the directory structure needed.
+
+Gemini Design:
+
+**Implementation Plan**
+
+* **Phase 1: Control Plane Tool & API Layer**
+* Implement the `inspect_manifest`, `retry_step`, and `replan_dag` RPC/REST endpoints with explicit capability boundaries and read-only flags.
+
+
+* Add an idempotency key layer for `retry_step` to prevent double-execution under race conditions.
+
+
+* Build state machine serialization helpers to snapshot active DAG branches before applying `mutation_spec` patches.
+
+
+
+
+* **Phase 2: Event Ingestion & Classifier Pipeline**
+* Setup the async pub/sub subscriber bound to the `WorkflowStepFailed` event stream.
+
+
+* Implement the classification engine to categorize errors into transient infra issues, deterministic data issues, or unrecoverable security/invariant violations.
+
+
+* Integrate stack trace and resource log fetching via `inspect_manifest` during the telemetry gathering phase.
+
+
+
+
+* **Phase 3: Remediation Loop & Heuristic Engine**
+* Wire up the closed-loop controller (Sense-Plan-Act-Verify) to handle automated retries with parameterized overrides (e.g., $1.5\times$ VRAM dynamic boost).
+
+
+* Build the DAG mutation executor capable of splicing fallback nodes or bypassing non-critical subgraphs during replanning.
+
+
+* Implement feedback synchronization to update shared control-plane caches upon successful step recovery.
+
+
+
+
+* **Phase 4: Escalation Guards & Telemetry Sync**
+* Implement counter tracking to enforce escalation thresholds (e.g., maximum 2 retries for resource exhaustion, $300\text{s}$ runtime dynamic patch caps).
+
+
+* Wire instant failure notifications with token context directly to Ops for authentication or permission errors.
+
+
+
+
+
+---
+Execute the script below to generate the `meta_control_plane` project structure using the `meta_` prefix and `src/meta_control_plane` directory path, along with a detailed `README.md`.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="meta_control_plane"
+SRC_DIR="${ROOT_DIR}/src/meta_control_plane"
+
+# Create directory hierarchy
+mkdir -p "${SRC_DIR}/api/v1"
+mkdir -p "${SRC_DIR}/api/schemas"
+mkdir -p "${SRC_DIR}/agent/controller"
+mkdir -p "${SRC_DIR}/agent/diagnosis"
+mkdir -p "${SRC_DIR}/agent/tools"
+mkdir -p "${SRC_DIR}/events"
+mkdir -p "${SRC_DIR}/escalation"
+mkdir -p "${ROOT_DIR}/tests/unit"
+mkdir -p "${ROOT_DIR}/tests/integration"
+
+# Create Python package init files
+touch "${SRC_DIR}/__init__.py"
+touch "${SRC_DIR}/api/__init__.py"
+touch "${SRC_DIR}/api/v1/__init__.py"
+touch "${SRC_DIR}/api/schemas/__init__.py"
+touch "${SRC_DIR}/agent/__init__.py"
+touch "${SRC_DIR}/agent/controller/__init__.py"
+touch "${SRC_DIR}/agent/diagnosis/__init__.py"
+touch "${SRC_DIR}/agent/tools/__init__.py"
+touch "${SRC_DIR}/events/__init__.py"
+touch "${SRC_DIR}/escalation/__init__.py"
+
+# Create meta_-prefixed source files
+touch "${SRC_DIR}/api/v1/meta_manifest_api.py"
+touch "${SRC_DIR}/api/v1/meta_execution_api.py"
+touch "${SRC_DIR}/api/v1/meta_graph_api.py"
+touch "${SRC_DIR}/api/schemas/meta_tool_schemas.py"
+touch "${SRC_DIR}/api/schemas/meta_mutation_schemas.py"
+
+touch "${SRC_DIR}/agent/controller/meta_triage_loop.py"
+touch "${SRC_DIR}/agent/controller/meta_heuristic_cache.py"
+touch "${SRC_DIR}/agent/diagnosis/meta_failure_classifier.py"
+touch "${SRC_DIR}/agent/diagnosis/meta_tuning_heuristics.py"
+touch "${SRC_DIR}/agent/tools/meta_inspect_tool.py"
+touch "${SRC_DIR}/agent/tools/meta_retry_tool.py"
+touch "${SRC_DIR}/agent/tools/meta_replan_tool.py"
+
+touch "${SRC_DIR}/events/meta_event_consumers.py"
+touch "${SRC_DIR}/events/meta_telemetry_drivers.py"
+
+touch "${SRC_DIR}/escalation/meta_escalation_engine.py"
+touch "${SRC_DIR}/escalation/meta_notification_channels.py"
+
+# Create test files
+touch "${ROOT_DIR}/tests/unit/test_meta_tools.py"
+touch "${ROOT_DIR}/tests/unit/test_meta_mutations.py"
+touch "${ROOT_DIR}/tests/integration/test_meta_triage_loop.py"
+
+# Write documentation into README.md
+cat << 'EOF' > "${ROOT_DIR}/README.md"
+# Meta Control Plane (Phase 4)
+
+Control plane framework exposing inspection, retry, and replanning tools to autonomous triage agents for self-healing platform execution[cite: 2].
+
+## Repository Layout
+
+```text
+meta-control-plane/
+├── README.md
+├── src/
+│   └── meta_control_plane/
+│       ├── __init__.py
+│       ├── api/
+│       │   ├── __init__.py
+│       │   ├── v1/
+│       │   │   ├── __init__.py
+│       │   │   ├── meta_manifest_api.py
+│       │   │   ├── meta_execution_api.py
+│       │   │   └── meta_graph_api.py
+│       │   └── schemas/
+│       │       ├── __init__.py
+│       │       ├── meta_tool_schemas.py
+│       │       └── meta_mutation_schemas.py
+│       ├── agent/
+│       │   ├── __init__.py
+│       │   ├── controller/
+│       │   │   ├── __init__.py
+│       │   │   ├── meta_triage_loop.py
+│       │   │   └── meta_heuristic_cache.py
+│       │   ├── diagnosis/
+│       │   │   ├── __init__.py
+│       │   │   ├── meta_failure_classifier.py
+│       │   │   └── meta_tuning_heuristics.py
+│       │   └── tools/
+│       │       ├── __init__.py
+│       │       ├── meta_inspect_tool.py
+│       │       ├── meta_retry_tool.py
+│       │       └── meta_replan_tool.py
+│       ├── events/
+│       │   ├── __init__.py
+│       │   ├── meta_event_consumers.py
+│       │   └── meta_telemetry_drivers.py
+│       └── escalation/
+│           ├── __init__.py
+│           ├── meta_escalation_engine.py
+│           └── meta_notification_channels.py
+└── tests/
+    ├── unit/
+    │   ├── test_meta_tools.py
+    │   └── test_meta_mutations.py
+    └── integration/
+        └── test_meta_triage_loop.py
+
+```
+
+## Directory & File Specifications
+
+### `src/meta_control_plane/api/`
+
+Exposes control plane operations and API parameter validation schemas.
+
+* `v1/meta_manifest_api.py`: Implements read-only `inspect_manifest` endpoint to retrieve active graph state, artifacts, telemetry, and execution logs.
+
+
+* `v1/meta_execution_api.py`: Implements `retry_step` endpoint with idempotency key verification for isolated step executions.
+
+
+* `v1/meta_graph_api.py`: Implements `replan_dag` endpoint for dynamic branch pruning and fallback node insertion.
+
+
+* `schemas/meta_tool_schemas.py`: JSON and OpenAPI schemas defining agent control tool parameter definitions.
+
+
+* `schemas/meta_mutation_schemas.py`: Schema definitions validating `mutation_spec` modifications to DAG graphs.
+
+
+
+### `src/meta_control_plane/agent/`
+
+Houses autonomous triage logic, heuristic classification modules, and agent capability tool integrations.
+
+* `controller/meta_triage_loop.py`: Implements the Sense-Plan-Act-Verify closed-loop autonomous control loop.
+
+
+* `controller/meta_heuristic_cache.py`: Shared cache for global hyperparameter tuning state updated upon verified step recovery.
+
+
+* `diagnosis/meta_failure_classifier.py`: Classifies errors into transient infrastructure, deterministic data, or unrecoverable invariant violations.
+
+
+* `diagnosis/meta_tuning_heuristics.py`: Calculates parameter mutations such as VRAM scaling factors and learning rate decay vectors.
+
+
+* `tools/meta_inspect_tool.py`: Agent wrapper for invoking graph and telemetry inspection capabilities.
+
+
+* `tools/meta_retry_tool.py`: Agent wrapper for executing parameter overrides on isolated step retries.
+
+
+* `tools/meta_replan_tool.py`: Agent wrapper for dispatching live graph mutations.
+
+
+
+### `src/meta_control_plane/events/`
+
+Handles asynchronous event collection and system performance telemetry gathering.
+
+* `meta_event_consumers.py`: Subscriber handler bound to `WorkflowStepFailed` event streams.
+
+
+* `meta_telemetry_drivers.py`: Extractors for process stack traces and resource utilization metrics.
+
+
+
+### `src/meta_control_plane/escalation/`
+
+Enforces retry constraints, escalation policies, and notification routing.
+
+* `meta_escalation_engine.py`: Enforces max retry thresholds (2 retries for resource exhaustion) and execution patch budgets (300s limit).
+
+
+* `meta_notification_channels.py`: Dispatches human escalation alerts with token context to Ops channels upon unrecoverable failures.
+
+
+
+### `tests/`
+
+Automated testing modules.
+
+* `unit/test_meta_tools.py`: Unit tests validating tool contract parameter formats and capability limits.
+
+
+* `unit/test_meta_mutations.py`: Unit tests verifying graph mutation specs and node pruning operations.
+
+
+* `integration/test_meta_triage_loop.py`: End-to-end integration tests for failure interception, diagnosis, and dynamic remediation.
+EOF
+
+
+
+chmod +x "${0}"
+echo "Initialized project structure in ./meta_control_plane"
+
+```
+
+```
+
+
+---
+User Input: As a senior engineer, Identify the frameworks, components and tools needed for the project
+uv is being used for the project
+
+

@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://learning-platform.example.com/schemas/domain-model.json",
+  "title": "Learning Platform Domain Model",
+  "description": "Reusable JSON Schema definitions for user identities, student profiles, instructors, user sessions, enrollments, personalized study plans, and lesson completion records.",
+  "$defs": {
+    "StudentProfile": {
+      "type": "object",
+      "title": "Student Profile",
+      "description": "Primary domain entity capturing student identity, linked Google Single Sign-On identity, preferences, timezone, and communication settings.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the student profile."
+        },
+        "identity": {
+          "$ref": "#/$defs/StudentIdentity",
+          "description": "Identity information associated with the student profile."
+        },
+        "googleSsoCredentials": {
+          "$ref": "#/$defs/GoogleSsoCredentials",
+          "description": "Linked Google Single Sign-On identity associated with the student profile."
+        },
+        "preferences": {
+          "$ref": "#/$defs/StudentPreferences",
+          "description": "Preferences associated with the student's learning experience."
+        },
+        "timezone": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]+/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*$",
+          "description": "IANA timezone identifier associated with the student's profile."
+        },
+        "communicationSettings": {
+          "$ref": "#/$defs/CommunicationSettings",
+          "description": "Settings governing communication with the student."
+        }
+      },
+      "required": [
+        "id",
+        "identity"
+      ],
+      "additionalProperties": false
+    },
+
+    "StudentIdentity": {
+      "type": "object",
+      "title": "Student Identity",
+      "description": "Core identity information representing the student.",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 1,
+          "description": "Email address representing the student's primary identity."
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Full name of the student."
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "additionalProperties": false
+    },
+
+    "GoogleSsoCredentials": {
+      "type": "object",
+      "title": "Google SSO Credentials",
+      "description": "Information linking the student profile to a Google Single Sign-On identity. This represents provider identity metadata rather than an OAuth access or refresh token.",
+      "properties": {
+        "provider": {
+          "const": "google",
+          "description": "Identity provider identifier fixed to Google."
+        },
+        "providerSubject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable subject identifier assigned by Google to the linked identity."
+        },
+        "linkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the Google identity was linked to the student profile."
+        }
+      },
+      "required": [
+        "provider",
+        "providerSubject"
+      ],
+      "additionalProperties": false
+    },
+
+    "StudentPreferences": {
+      "type": "object",
+      "title": "Student Preferences",
+      "description": "Preferences associated with the student's learning experience.",
+      "properties": {
+        "preferredLanguage": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+          "description": "BCP 47-style language tag representing the student's preferred language."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "CommunicationSettings": {
+      "type": "object",
+      "title": "Communication Settings",
+      "description": "Settings governing communication with the student.",
+      "properties": {
+        "emailNotificationsEnabled": {
+          "type": "boolean",
+          "description": "Indicates whether email notifications are enabled for the student."
+        }
+      },
+      "required": [
+        "emailNotificationsEnabled"
+      ],
+      "additionalProperties": false
+    },
+
+    "Instructor": {
+      "type": "object",
+      "title": "Instructor / Educator",
+      "description": "Domain entity representing an instructor or educator who manages or delivers specific courses.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the instructor or educator."
+        },
+        "assignedCourseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Identifiers referencing courses assigned to the instructor."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+
+    "UserSession": {
+      "type": "object",
+      "title": "User Session",
+      "description": "Active or historical security session associated with a user.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the user session."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the user associated with the session."
+        },
+        "authenticationMethod": {
+          "type": "string",
+          "enum": [
+            "google_sso",
+            "password",
+            "other"
+          ],
+          "description": "Authentication method used to establish the session."
+        },
+        "ipAddress": {
+          "type": "string",
+          "format": "ipv4",
+          "description": "IPv4 address associated with the security session."
+        },
+        "deviceFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Device fingerprint associated with the security session, when captured."
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session was established."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session expires, when an expiration time applies."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Indicates whether the security session is currently active."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "authenticationMethod",
+        "startedAt"
+      ],
+      "additionalProperties": false
+    },
+
+    "Enrollment": {
+      "type": "object",
+      "title": "Enrollment",
+      "description": "Junction entity linking a student to a specific course version and representing the enrollment lifecycle.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the enrollment."
+        },
+        "studentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the student associated with the enrollment."
+        },
+        "courseVersionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the specific course version in which the student is enrolled."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "suspended",
+            "completed",
+            "canceled"
+          ],
+          "description": "Current lifecycle status of the enrollment."
+        },
+        "enrolledAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the enrollment began."
+        },
+        "suspendedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the enrollment was suspended, when applicable."
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the enrollment was completed, when applicable."
+        },
+        "canceledAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the enrollment was canceled, when applicable."
+        },
+        "personalizedStudyPlan": {
+          "$ref": "#/$defs/PersonalizedStudyPlan",
+          "description": "Personalized study plan associated with this enrollment."
+        }
+      },
+      "required": [
+        "id",
+        "studentId",
+        "courseVersionId",
+        "status",
+        "enrolledAt"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "suspended"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "suspendedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "completedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "canceled"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "canceledAt"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "PersonalizedStudyPlan": {
+      "type": "object",
+      "title": "Personalized Study Plan",
+      "description": "Study plan instance derived from a study plan template and tailored to an individual student's enrollment, start date, target pace, and progress trajectory.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the personalized study plan."
+        },
+        "templateId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the study plan template from which this personalized plan is derived."
+        },
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Calendar date on which the personalized study plan begins."
+        },
+        "targetPace": {
+          "$ref": "#/$defs/TargetPace",
+          "description": "Target progression rate established for the personalized study plan."
+        },
+        "progressTrajectory": {
+          "$ref": "#/$defs/ProgressTrajectory",
+          "description": "Current progression information relative to the personalized study plan."
+        }
+      },
+      "required": [
+        "id",
+        "templateId",
+        "startDate",
+        "targetPace"
+      ],
+      "additionalProperties": false
+    },
+
+    "TargetPace": {
+      "type": "object",
+      "title": "Target Pace",
+      "description": "Relative pacing target describing the expected rate at which the student progresses through the study plan.",
+      "properties": {
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Positive magnitude of the target progression rate."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "lessons_per_week",
+            "lessons_per_month",
+            "modules_per_week",
+            "modules_per_month",
+            "hours_per_week",
+            "hours_per_month"
+          ],
+          "description": "Unit describing the target progression rate."
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+
+    "ProgressTrajectory": {
+      "type": "object",
+      "title": "Progress Trajectory",
+      "description": "Progress information describing the student's movement through the personalized study plan.",
+      "properties": {
+        "completedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of study-plan items completed by the student."
+        },
+        "totalCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total number of study-plan items represented by the progression."
+        },
+        "completionPercentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of study-plan items completed."
+        },
+        "estimatedCompletionDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Projected calendar date on which the student is expected to complete the study plan."
+        },
+        "aheadOrBehindDays": {
+          "type": "integer",
+          "description": "Number of days ahead of or behind the target schedule; positive values indicate ahead and negative values indicate behind."
+        }
+      },
+      "required": [
+        "completedCount",
+        "totalCount"
+      ],
+      "additionalProperties": false
+    },
+
+    "LessonCompletionRecord": {
+      "type": "object",
+      "title": "Lesson Completion Record",
+      "description": "Record tracking completion state, timestamps, and pass/fail outcome for an individual lesson or quiz for a student enrollment.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the lesson completion record."
+        },
+        "enrollmentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the enrollment for which the completion is recorded."
+        },
+        "lessonId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the individual lesson or quiz for which completion is recorded."
+        },
+        "completionStatus": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "completed"
+          ],
+          "description": "Completion state of the lesson or quiz."
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the student began the lesson or quiz, when recorded."
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the lesson or quiz was completed, when applicable."
+        },
+        "passFailStatus": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_applicable"
+          ],
+          "description": "Pass or fail outcome recorded when an assessment outcome applies."
+        },
+        "score": {
+          "$ref": "#/$defs/AssessmentScore",
+          "description": "Quantitative assessment score associated with the lesson or quiz, when applicable."
+        }
+      },
+      "required": [
+        "id",
+        "enrollmentId",
+        "lessonId",
+        "completionStatus"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "completionStatus": {
+                "const": "in_progress"
+              }
+            },
+            "required": [
+              "completionStatus"
+            ]
+          },
+          "then": {
+            "required": [
+              "startedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionStatus": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "completionStatus"
+            ]
+          },
+          "then": {
+            "required": [
+              "completedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "passFailStatus"
+            ]
+          },
+          "then": {
+            "properties": {
+              "passFailStatus": {
+                "enum": [
+                  "passed",
+                  "failed",
+                  "not_applicable"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "AssessmentScore": {
+      "type": "object",
+      "title": "Assessment Score",
+      "description": "Value object capturing quantitative assessment score information when an assessment produces a measurable result.",
+      "properties": {
+        "rawScore": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Points or raw score earned."
+        },
+        "maxScore": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Maximum possible score for the assessment."
+        },
+        "percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage score achieved."
+        }
+      },
+      "required": [
+        "rawScore",
+        "maxScore"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

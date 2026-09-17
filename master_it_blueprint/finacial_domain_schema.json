@@ -1,0 +1,749 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://learning-platform.example.com/schemas/financial-domain.json",
+  "title": "Financial and Subscription Domain Model",
+  "description": "Reusable JSON Schema definitions for payment accounts, gateway customer references, subscriptions, recurring plans, purchase orders, invoices, payment methods, transaction receipts, billing lifecycle events, monetary amounts, and promotional discounts.",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Non-empty stable identifier."
+    },
+
+    "DateTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp represented using the JSON Schema date-time format."
+    },
+
+    "CurrencyCode": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "Three-letter alphabetic ISO 4217 currency code."
+    },
+
+    "MonetaryAmount": {
+      "type": "object",
+      "title": "Monetary Amount",
+      "description": "Value object representing a non-negative monetary amount as an integer in the smallest applicable currency unit.",
+      "properties": {
+        "amount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Non-negative monetary amount expressed in the smallest applicable unit of the specified currency."
+        },
+        "currency": {
+          "$ref": "#/$defs/CurrencyCode"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "additionalProperties": false
+    },
+
+    "GatewayCustomerReference": {
+      "type": "object",
+      "title": "Gateway Customer Reference",
+      "description": "Value object identifying a customer record maintained by a downstream payment gateway.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier for the downstream payment gateway or payment provider."
+        },
+        "customerId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Customer identifier assigned by the downstream payment gateway."
+        }
+      },
+      "required": [
+        "provider",
+        "customerId"
+      ],
+      "additionalProperties": false
+    },
+
+    "PaymentMethodReference": {
+      "type": "object",
+      "title": "Payment Method Reference",
+      "description": "Reference to a payment method without representing payment credentials or sensitive payment instrument data.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier for the payment provider that owns the payment method."
+        },
+        "methodId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the payment method maintained by the payment provider."
+        }
+      },
+      "required": [
+        "provider",
+        "methodId"
+      ],
+      "additionalProperties": false
+    },
+
+    "PaymentAccount": {
+      "type": "object",
+      "title": "Payment Account",
+      "description": "Entity linking a student to a customer identity maintained by a downstream payment gateway and to payment methods associated with that customer.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the payment account within the learning platform."
+        },
+        "studentId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the student associated with this payment account."
+        },
+        "gatewayCustomer": {
+          "$ref": "#/$defs/GatewayCustomerReference",
+          "description": "Reference to the corresponding customer identity maintained by the downstream payment gateway."
+        },
+        "paymentMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentMethodReference"
+          },
+          "uniqueItems": true,
+          "description": "Payment methods associated with this payment account."
+        }
+      },
+      "required": [
+        "id",
+        "studentId",
+        "gatewayCustomer"
+      ],
+      "additionalProperties": false
+    },
+
+    "RecurringPlan": {
+      "type": "object",
+      "title": "Recurring Plan",
+      "description": "Value object defining the price and recurring billing interval applicable to a subscription.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier assigned to the recurring billing plan."
+        },
+        "price": {
+          "$ref": "#/$defs/MonetaryAmount",
+          "description": "Monetary price charged for each occurrence of the recurring billing interval."
+        },
+        "billingInterval": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year"
+          ],
+          "description": "Unit of time used to express the recurring billing interval."
+        },
+        "intervalCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of billing-interval units between recurring charges."
+        }
+      },
+      "required": [
+        "id",
+        "price",
+        "billingInterval",
+        "intervalCount"
+      ],
+      "additionalProperties": false
+    },
+
+    "Subscription": {
+      "type": "object",
+      "title": "Subscription",
+      "description": "Entity representing a recurring billing relationship, including its payment account, recurring plan, lifecycle status, billing period, payment method, receipts, lifecycle events, and applicable promotional discount.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the subscription."
+        },
+        "paymentAccountId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the payment account associated with the subscription."
+        },
+        "plan": {
+          "$ref": "#/$defs/RecurringPlan",
+          "description": "Recurring billing plan governing the subscription price and billing cadence."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "trialing",
+            "past_due",
+            "canceled",
+            "expired"
+          ],
+          "description": "Current lifecycle status of the subscription."
+        },
+        "paymentMethod": {
+          "$ref": "#/$defs/PaymentMethodReference",
+          "description": "Payment method associated with the subscription."
+        },
+        "currentPeriodStart": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp marking the beginning of the subscription's current billing period."
+        },
+        "currentPeriodEnd": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp marking the end of the subscription's current billing period."
+        },
+        "canceledAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the subscription was canceled."
+        },
+        "transactionReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransactionReceipt"
+          },
+          "uniqueItems": true,
+          "description": "Transaction receipts associated with payments made for the subscription."
+        },
+        "billingLifecycleEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BillingLifecycleEvent"
+          },
+          "description": "Billing lifecycle events associated with the subscription."
+        },
+        "appliedDiscountId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the promotional discount applied to the subscription."
+        }
+      },
+      "required": [
+        "id",
+        "paymentAccountId",
+        "plan",
+        "status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "canceled"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "canceledAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "canceledAt"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "canceled"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "currentPeriodStart",
+              "currentPeriodEnd"
+            ]
+          },
+          "then": {
+            "description": "When both billing-period boundaries are present, currentPeriodEnd must be later than currentPeriodStart. Exact temporal ordering must be enforced by application logic because JSON Schema does not provide native date arithmetic."
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "PurchaseOrder": {
+      "type": "object",
+      "title": "Purchase Order",
+      "description": "Entity representing a purchase transaction, including the paying account, optional subscription relationship, charged amount, invoice relationship, payment method, transaction receipts, billing lifecycle events, and applicable promotional discount.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the purchase order."
+        },
+        "paymentAccountId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the payment account responsible for the purchase."
+        },
+        "subscriptionId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the related subscription when the purchase is associated with recurring billing."
+        },
+        "invoiceId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the invoice associated with this purchase order."
+        },
+        "totalAmount": {
+          "$ref": "#/$defs/MonetaryAmount",
+          "description": "Total monetary amount associated with the purchase order."
+        },
+        "paymentMethod": {
+          "$ref": "#/$defs/PaymentMethodReference",
+          "description": "Payment method associated with the purchase order."
+        },
+        "transactionReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransactionReceipt"
+          },
+          "uniqueItems": true,
+          "description": "Transaction receipts associated with payments made for this purchase order."
+        },
+        "billingLifecycleEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BillingLifecycleEvent"
+          },
+          "description": "Billing lifecycle events associated with the purchase order."
+        },
+        "appliedDiscountId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the promotional discount applied during checkout."
+        },
+        "orderedAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp indicating when the purchase order was issued."
+        }
+      },
+      "required": [
+        "id",
+        "paymentAccountId",
+        "totalAmount",
+        "orderedAt"
+      ],
+      "additionalProperties": false
+    },
+
+    "Invoice": {
+      "type": "object",
+      "title": "Invoice",
+      "description": "Entity representing a bill issued for a purchase or recurring subscription charge.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the invoice."
+        },
+        "purchaseOrderId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Identifier referencing the purchase order associated with the invoice."
+        },
+        "amountDue": {
+          "$ref": "#/$defs/MonetaryAmount",
+          "description": "Amount currently due on the invoice."
+        },
+        "amountPaid": {
+          "$ref": "#/$defs/MonetaryAmount",
+          "description": "Amount already paid toward the invoice."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "open",
+            "paid",
+            "uncollectible",
+            "void"
+          ],
+          "description": "Current lifecycle status of the invoice."
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the invoice was issued."
+        },
+        "dueAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp by which payment is due, when applicable."
+        },
+        "paidAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the invoice became fully paid."
+        },
+        "voidedAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the invoice was voided."
+        }
+      },
+      "required": [
+        "id",
+        "purchaseOrderId",
+        "amountDue",
+        "amountPaid",
+        "status",
+        "issuedAt"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "paid"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "paidAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "void"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "voidedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "paidAt"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "paid"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "voidedAt"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "void"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "TransactionReceipt": {
+      "type": "object",
+      "title": "Transaction Receipt",
+      "description": "Record representing a payment transaction associated with a purchase order or subscription.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the transaction receipt."
+        },
+        "gatewayTransactionId": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Transaction identifier assigned by the downstream payment gateway."
+        },
+        "amount": {
+          "$ref": "#/$defs/MonetaryAmount",
+          "description": "Monetary amount represented by the transaction."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "failed",
+            "pending",
+            "refunded"
+          ],
+          "description": "Current outcome or lifecycle status of the transaction."
+        },
+        "processedAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the transaction was processed by the payment gateway."
+        },
+        "refundedAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the transaction was refunded."
+        }
+      },
+      "required": [
+        "id",
+        "gatewayTransactionId",
+        "amount",
+        "status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "refunded"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "processedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "refunded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "refundedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "refundedAt"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "refunded"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "BillingLifecycleEvent": {
+      "type": "object",
+      "title": "Billing Lifecycle Event",
+      "description": "Domain event recording a significant billing lifecycle occurrence associated with a subscription or purchase order.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "subscription_created",
+            "subscription_renewed",
+            "subscription_past_due",
+            "subscription_canceled",
+            "subscription_expired",
+            "payment_pending",
+            "payment_succeeded",
+            "payment_failed",
+            "payment_refunded",
+            "invoice_created",
+            "invoice_paid",
+            "invoice_voided",
+            "discount_applied",
+            "discount_removed"
+          ],
+          "description": "Domain-defined billing lifecycle event type."
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp at which the billing lifecycle event occurred."
+        }
+      },
+      "required": [
+        "type",
+        "occurredAt"
+      ],
+      "additionalProperties": false
+    },
+
+    "Discount": {
+      "type": "object",
+      "title": "Discount / Coupon",
+      "description": "Promotional entity that changes an applicable price, extends an access window, or both.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Identifier",
+          "description": "Stable identifier for the discount or coupon."
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Promotional code used to identify or apply the discount during checkout."
+        },
+        "priceAdjustment": {
+          "$ref": "#/$defs/PriceAdjustment",
+          "description": "Promotional adjustment describing how the discount changes an applicable price."
+        },
+        "accessWindowAdjustment": {
+          "$ref": "#/$defs/AccessWindowAdjustment",
+          "description": "Temporal adjustment describing how the discount changes an applicable access window."
+        },
+        "validFrom": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp from which the discount is applicable."
+        },
+        "validUntil": {
+          "$ref": "#/$defs/DateTime",
+          "description": "Timestamp through which the discount is applicable."
+        }
+      },
+      "required": [
+        "id",
+        "code"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "priceAdjustment"
+          ]
+        },
+        {
+          "required": [
+            "accessWindowAdjustment"
+          ]
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "validUntil"
+            ]
+          },
+          "then": {
+            "required": [
+              "validFrom"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "validFrom"
+            ]
+          },
+          "then": {
+            "description": "If validFrom and validUntil are both supplied, application logic must ensure validUntil is not earlier than validFrom because JSON Schema cannot perform native date arithmetic."
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+
+    "PriceAdjustment": {
+      "type": "object",
+      "title": "Price Adjustment",
+      "description": "Value object describing a promotional reduction to an applicable price.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "percentage",
+              "description": "Indicates that the adjustment is expressed as a percentage."
+            },
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentage by which the applicable price is reduced."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "fixed_amount",
+              "description": "Indicates that the adjustment is expressed as a fixed monetary amount."
+            },
+            "value": {
+              "$ref": "#/$defs/MonetaryAmount",
+              "description": "Fixed monetary amount by which the applicable price is reduced."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "AccessWindowAdjustment": {
+      "type": "object",
+      "title": "Access Window Adjustment",
+      "description": "Value object describing an extension to an applicable access window provided by a discount or coupon.",
+      "properties": {
+        "duration": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Positive duration by which the applicable access window is extended."
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year"
+          ],
+          "description": "Unit in which the access-window extension is expressed."
+        }
+      },
+      "required": [
+        "duration",
+        "unit"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

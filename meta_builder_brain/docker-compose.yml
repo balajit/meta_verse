@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: meta_brain_postgres
+    environment:
+      POSTGRES_DB: meta_builder
+      POSTGRES_USER: brain_admin
+      POSTGRES_PASSWORD: brain_secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brain_admin -d meta_builder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  openbao:
+    image: openbao/openbao:2.1.0
+    container_name: meta_brain_openbao
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: root_dev_token
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+
+  opa:
+    image: openpolicyagent/opa:0.67.0-static
+    container_name: meta_brain_opa
+    command:
+      - "run"
+      - "--server"
+      - "--log-level=debug"
+      - "--config-file=/etc/opa/config.yaml"
+      - "/policies"
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./docker/opa/config.yaml:/etc/opa/config.yaml:ro
+      - ./config/policies:/policies:ro
+
+volumes:
+  pgdata:

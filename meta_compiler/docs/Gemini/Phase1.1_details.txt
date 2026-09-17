@@ -1,0 +1,415 @@
+This is the first step of phase 1 of overall design.  No code generation needed in this phase.
+As a Google engineer, identify the open source components that are available.  Just as an example, think of Postgresql, REDIS kind
+Focus on identifying the higher level frameworks
+for example which framework can help define and execute the schema compilation and DAG validation
+
+                                   [ YAML Manifest Specs ]
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │ Declarative Schema        │
+                               │ Compiler & DAG Validator  │
+                               └─────────────┬─────────────┘
+
+
+
+
+Overall Phase 1 goal:
+Phase 1: Deterministic Engine & Core Schema CompilerGoal: Establish DB-backed state machines and standard execution handlers.  Deliverables:Deploy core state tracking tables (lp_workflow_definitions, lp_workflow_instances, lp_task_executions).  Implement static Pydantic/SQLAlchemy schema compiler for explicit YAML definitions.Shadow-write workflow steps alongside current legacy pipelines.
+
+Phase 1 establishes the deterministic baseline required to replace imperative execution loops with a resilient, DB-backed state machine without interrupting active production pipelines. The design breaks down into four fundamental building blocks.
+
+---
+
+### Phase 1 Core Building Blocks Architecture
+
+```
+                                  [ YAML Manifest Specs ]
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │ Declarative Schema        │
+                               │ Compiler & DAG Validator  │
+                               └─────────────┬─────────────┘
+                                             │
+                                             ▼
+[ Legacy Pipeline ] ──(Shadow Interceptor)──►│ Task Execution Registry   │
+                                             │ & Handler Adapters        │
+                                             └─────────────┬─────────────┘
+                                                           │
+                                                           ▼
+                                             ┌───────────────────────────┐
+                                             │ DB State Engine           │
+                                             │ (Instance & Task FSM)     │
+                                             └───────────────────────────┘
+
+```
+
+---
+
+### 1. Core Database State Engine (FSM Infrastructure)
+
+Manages persistent state, idempotency checkpoints, and transition locks across task executions.
+
+* **`lp_workflow_definitions` Table:** Versioned registry storing DAG schemas, edge routing rules, and handler bindings in JSONB format.
+
+
+* **`lp_workflow_instances` Table:** Global state tracker for parent workflow runs (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `HALTED`).
+
+
+* **`lp_task_executions` Table:** Step-level execution log capturing attempts, execution windows, error codes, and JSONB pointers to input/output artifacts (`input_ref`, `output_ref`).
+
+
+* **State Transition Guard:** Atomic DB-level state machine enforcing valid transitions (e.g., `PENDING` $\rightarrow$ `RUNNING` $\rightarrow$ `COMPLETED` / `FAILED`).
+
+------------------------------------------------------------
+
+Gemini Design v0.1
+
+The Declarative Schema Compiler & DAG Validator ingests raw YAML Manifest Specs, validates graph structure, and compiles internal Pydantic runtime models before persistence into `lp_workflow_definitions`.
+
+| Component Tier | Open-Source Framework / Tool | Core Function in Step 2 | Key Advantage for Schema & DAG Compilation |
+| --- | --- | --- | --- |
+| **Schema Validation & Dynamic Modeling** | **Pydantic V2 / JSONSchema** | Parses YAML specs into dynamic typed runtime models and validates input/output data contracts. | Fast dynamic model compilation from JSON/YAML dictionaries with strict type enforcement. |
+| **Configuration Constraints Engine** | **CUE (Cuelang)** | Validates raw manifest configurations against declarative type constraints and default value rules. | Unifies schema definition and constraint checking in a single hermetic policy language. |
+| **Graph Topology & Cycle Validation** | **NetworkX / Rustworkx** | Verifies DAG integrity, detects execution cycles, and computes topological sort order. | High-throughput graph algorithms (`is_directed_acyclic_graph`, `topological_sort`) to validate workflow edge routing rules.
+
+ |
+| **Standard Library Graph Solver** | **Python `graphlib` (`TopologicalSorter`)** | Lightweight graph traversal and static dependency ordering without external C/Rust dependencies. | Zero-dependency static dependency ordering natively built into the Python runtime. |
+| **Declarative Pipeline Compiler** | **Apache Hamilton / Dagster Core** | Compiles YAML specs into executable task graphs with explicit data validation hooks (`@check_output`). | Enforces strict input/output boundaries across nodes prior to database registration.
+
+ |
+
+---
+
+### Key Architectural Frameworks by Layer
+
+**1. Schema Compilation & Payload Contract Enforcement**
+
+* **Pydantic V2**: Translates structural YAML specifications into validated runtime objects. It dynamically creates and validates Pydantic data schemas at runtime, ensuring that inputs and output artifacts (`input_ref`, `output_ref`) match expected types before execution.
+
+
+* **JSONSchema (`jsonschema`)**: Validates raw input YAML documents directly against predefined meta-schemas (e.g., JSON Schema Draft 2020-12). It acts as an early-stage syntax guard before deeper topological graph compilation occurs.
+
+**2. Graph Topology & DAG Validation Engines**
+
+* **NetworkX**: Serves as the primary engine for graph verification. It ingests parsed task edge definitions, performs graph validation checks (such as Kahn's algorithm or Tarjan's strongly connected components algorithm), and rejects invalid or cyclic manifests before database persistence.
+
+
+* **Rustworkx**: Provides high-performance, Rust-backed graph processing for Python. It is ideal if the platform requires validating complex multi-node graphs or high-frequency manifest compilation within sub-millisecond execution windows.
+* **`graphlib.TopologicalSorter`**: Standard Python module for linearizing task node dependencies, determining parallel step execution layers, and detecting circular dependencies.
+
+**3. Higher-Level Declarative Workflow Compilers**
+
+* **Apache Hamilton**: Transforms declarative task graph specifications into validated, portable execution graphs. It features native data validation adapters (`SchemaValidator`, `@check_output`) that inspect data structures across pipeline nodes.
+* **Dagster Core (`dagster-pipes` / `DagFactory`)**: Provides declarative workflow abstractions that separate DAG graph structures from underlying execution logic. It allows YAML specs to be compiled into static, typed execution definitions.
+
+---
+
+### Recommended Framework Selection for Phase 1
+
+* **Schema Parsing & Dynamic Typing:** **Pydantic V2** combined with **`jsonschema`** for two-pass manifest parsing and artifact contract validation.
+
+
+* **DAG Topology & Cycle Detection:** **NetworkX** (or standard library **`graphlib`**) for fast topological sorting and explicit cycle validation during registration into `lp_workflow_definitions`.
+
+
+* **Micro-DAG Validation Wrapper:** **Apache Hamilton** for lightweight, in-memory dependency parsing and payload contract checking across task handler boundaries.
+
+____________________________________________
+
+User Input:
+Using the recommended frameworks - create level 1-4 engineering diagrams
+
+Gemini Design:
+
+The engineering diagrams below detail the four C4 architecture levels for the **Declarative Schema Compiler & DAG Validator** using the recommended stack (**Pydantic V2**, **jsonschema**, **NetworkX**, and **Apache Hamilton**) integrated with the Core Database State Engine.
+
+---
+
+**Level 1: System Context Diagram**
+
+Defines the boundary between human developers or specs, the Compiler & Validator subsystem, and the downstream persistent DB State Engine.
+
+```
+  ┌───────────────────────────┐
+  │   YAML Manifest Specs     │  (Raw Declarative Workflow Definitions)[cite: 19]
+  └─────────────┬─────────────┘
+                │
+                │ Raw YAML
+                ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │   Declarative Schema Compiler & DAG Validator Subsystem │[cite: 19]
+  │   (Pydantic V2, JSONSchema, NetworkX, Apache Hamilton)   │[cite: 19]
+  └─────────────┬───────────────────────────────────────────┘
+                │
+                │ Validated JSONB DAG & Task Bindings
+                ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │             Core DB State Engine                        │[cite: 19]
+  │   (lp_workflow_definitions, lp_workflow_instances)    │[cite: 19]
+  └─────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+**Level 2: Container Diagram**
+
+Illustrates the high-level runtime containers, memory boundaries, and persistence targets involved in compilation and deployment.
+
+```
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │                            COMPILATION & VALIDATION                             │
+ │                                                                                 │
+ │   ┌──────────────────────┐        ┌─────────────────────────────────────────┐   │
+ │   │  Manifest Ingestion  │────────►  Declarative Compiler Container        │   │
+ │   │  API / CLI Entry     │  YAML  │  • Fast Syntax Validation               │   │[cite: 19]
+ │   └──────────────────────┘        │  • Dynamic Model Compilation            │   │[cite: 19]
+ │                                   │  • Topological Cycle Check              │   │[cite: 19]
+ │                                   └────────────────────┬────────────────────┘   │
+ └────────────────────────────────────────────────────────┼────────────────────────┘
+                                                          │ Compiled Manifest
+                                                          ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │                            PERSISTENCE & STATE ENGINE                           │
+ │                                                                                 │
+ │   ┌─────────────────────────────────────────────────────────────────────────┐   │
+ │   │                       PostgreSQL Stateful Engine                        │   │[cite: 19]
+ │   │  ┌──────────────────────────┐  ┌─────────────────────────────────────┐  │   │
+ │   │  │ lp_workflow_definitions  │  │ lp_workflow_instances / executions  │  │   │[cite: 19]
+ │   │  └──────────────────────────┘  └─────────────────────────────────────┘  │   │
+ │   └─────────────────────────────────────────────────────────────────────────┘   │
+ └─────────────────────────────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+**Level 3: Component Diagram (Compiler & Validator Subsystem)**
+
+Breaks down the inner components of the compilation pipeline, mapping each layer directly to its designated open-source framework.
+
+```
+                              [ Raw YAML Manifest Specs ][cite: 19]
+                                           │
+                                           ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────┐
+ │          DECLARATIVE SCHEMA COMPILER & DAG VALIDATOR SUBSYSTEM                  │
+ │                                                                                 │
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ 1. Syntax Guard Component (jsonschema)                                   │   │[cite: 19]
+ │  │    - Validates raw YAML structures against JSON Schema Draft 2020-12     │   │[cite: 19]
+ │  └──────────────────────────────────┬───────────────────────────────────────┘   │
+ │                                     │ Validated Dict
+ │                                     ▼
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ 2. Dynamic Model Compiler Component (Pydantic V2)                        │   │[cite: 19]
+ │  │    - Compiles typed runtime specs & validates input_ref / output_ref    │   │[cite: 19]
+ │  └──────────────────────────────────┬───────────────────────────────────────┘   │
+ │                                     │ Typed Dynamic Models
+ │                                     ▼
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ 3. Topological Validator Component (NetworkX / graphlib)                 │   │[cite: 19]
+ │  │    - Builds Directed Graph (DiGraph) & runs cycle detection algorithms   │   │[cite: 19]
+ │  └──────────────────────────────────┬───────────────────────────────────────┘   │
+ │                                     │ Acyclic Task Graph
+ │                                     ▼
+ │  ┌──────────────────────────────────────────────────────────────────────────┐   │
+ │  │ 4. Payload Contract Checker (Apache Hamilton)                            │   │[cite: 19]
+ │  │    - In-memory execution graph check & output validation (@check_output)   │   │[cite: 19]
+ │  └──────────────────────────────────┬───────────────────────────────────────┘   │
+ └─────────────────────────────────────┼───────────────────────────────────────────┘
+                                       │
+                                       │ Compiled Workflow JSONB
+                                       ▼
+                  [ PostgreSQL: lp_workflow_definitions ][cite: 19]
+
+```
+
+---
+
+**Level 4: Code & Execution Data Flow Mechanics**
+
+Traces the step-by-step transformation lifecycle of a manifest payload through the module boundaries before persistence into the database.
+
+```
+ Manifest Spec        Syntax Guard           Model Compiler        Graph Solver          Contract Engine         State Engine
+  (Raw YAML)          (jsonschema)            (Pydantic V2)         (NetworkX)           (Apache Hamilton)       (PostgreSQL)
+      │                    │                       │                     │                      │                     │
+      │── 1. Ingest YAML ─►│                       │                     │                      │                     │[cite: 19]
+      │                    │── 2. Structural Check►│                     │                      │                     │[cite: 19]
+      │                    │      (Schema Draft)   │                     │                      │                     │[cite: 19]
+      │                    │                       │── 3. Build Models ─►│                      │                     │[cite: 19]
+      │                    │                       │   (Strict Types)    │                      │                     │[cite: 19]
+      │                    │                       │                     │── 4. Build DiGraph ─►│                     │[cite: 19]
+      │                    │                       │                     │   & Assert Acyclic   │                     │[cite: 19]
+      │                    │                       │                     │                      │── 5. Validate Task ►│[cite: 19]
+      │                    │                       │                     │                      │   Node Contracts    │[cite: 19]
+      │                    │                       │                     │                      │                      │── 6. Insert JSONB ──► lp_workflow_definitions[cite: 19]
+
+```
+
+### Component Execution Responsibilities
+
+| Processing Step | Component Layer | Framework Used | Primary Action / Validation Guard |
+| --- | --- | --- | --- |
+| **Step 1: Structural Parsing** | Syntax Guard | `jsonschema` | Performs structural checks on input YAML against static meta-schemas.
+
+ |
+| **Step 2: Typed Materialization** | Dynamic Model Compiler | `Pydantic V2` | Coerces types and generates typed dynamic runtime data models for task definitions.
+
+ |
+| **Step 3: Topology Check** | Topological Validator | `NetworkX` / `graphlib` | Construct a directed graph and verifies acyclic rules using Kahn's algorithm (`is_directed_acyclic_graph`).
+
+ |
+| **Step 4: Contract Inspection** | Payload Contract Checker | `Apache Hamilton` | Verifies data type compatibility across step dependencies prior to database storage.
+
+ |
+| **Step 5: Database Persistence** | DB Serializer | `SQLAlchemy` / `asyncpg` | Writes compiled graph definitions and versioned JSONB metadata into `lp_workflow_definitions`.
+
+ |
+
+ ---------------------------
+
+ User Input: Design the project structure for this component with directory and file names with responsibilities and functions
+
+ ----------------------------
+
+ Gemini Design:
+
+ ```
+src/lp_compiler/
+├── __init__.py
+├── config.py                         # Environment configs & meta-schema path settings
+├── schemas/
+│   └── meta_schema_v1.json           # JSON Schema Draft 2020-12 static rules
+├── guards/
+│   ├── __init__.py
+│   └── syntax_guard.py               # Step 1: jsonschema structural validation
+├── compilers/
+│   ├── __init__.py
+│   ├── models.py                     # Pydantic V2 core models & dynamic specs
+│   └── model_compiler.py             # Step 2: Typed model synthesis & payload bounds
+├── validators/
+│   ├── __init__.py
+│   └── topology_validator.py         # Step 3: NetworkX DiGraph & cycle detection
+├── contracts/
+│   ├── __init__.py
+│   └── contract_checker.py           # Step 4: Apache Hamilton in-memory DAG checks
+├── persistence/
+│   ├── __init__.py
+│   └── db_serializer.py              # Step 5: SQLAlchemy async JSONB persistence
+└── orchestrator.py                   # Main pipeline facade orchestrating Steps 1–5
+
+```
+
+---
+
+### Module Responsibilities & Core Functions
+
+#### **1. Syntax Guard (`src/lp_compiler/guards/syntax_guard.py`)**
+
+* **Responsibility:** Ingests raw YAML/JSON specifications and validates overall structure against static JSON Schema Draft 2020-12 rules prior to dynamic model creation.
+
+
+* **Core Functions:**
+* `load_meta_schema(schema_path: Path) -> dict`: Loads and caches the base validation schema from disk.
+* `validate_manifest_syntax(raw_manifest: dict) -> dict`: Executes `jsonschema.validate()`, raising structured `SyntaxValidationError` on schema mismatches.
+
+
+
+
+
+---
+
+#### **2. Dynamic Model Compiler (`src/lp_compiler/compilers/`)**
+
+* **Responsibility:** Translates raw dictionary structures into typed dynamic runtime Pydantic objects, enforcing validation on payload boundaries (`input_ref`, `output_ref`).
+
+
+* **Core Models (`models.py`):**
+* `TaskNodeSpec(BaseModel)`: Node execution metadata, task parameters, and dependency aliases.
+
+
+* `ArtifactRefSpec(BaseModel)`: Pointer types for input/output schema bindings (`input_ref`, `output_ref`).
+
+
+* `WorkflowManifestSpec(BaseModel)`: Global workflow definition wrapping task nodes and edge routes.
+
+
+
+
+* **Core Functions (`model_compiler.py`):**
+* `compile_runtime_models(validated_manifest: dict) -> WorkflowManifestSpec`: Materializes dynamic Pydantic models from raw dicts.
+
+
+* `build_dynamic_artifact_schema(ref_spec: ArtifactRefSpec) -> Type[BaseModel]`: Generates dynamic Pydantic data wrappers for input/output validation at task boundaries.
+
+
+
+
+
+---
+
+#### **3. Topological Validator (`src/lp_compiler/validators/topology_validator.py`)**
+
+* **Responsibility:** Construct a `NetworkX` directed graph (`DiGraph`) from compiled node dependency mappings to verify acyclic guarantees and establish execution ordering.
+
+
+* **Core Functions:**
+* `build_networkx_graph(manifest: WorkflowManifestSpec) -> nx.DiGraph`: Populates graph nodes and directed dependency edges.
+
+
+* `assert_acyclic_topology(graph: nx.DiGraph) -> List[str]`: Evaluates `nx.is_directed_acyclic_graph()`; raises `CyclicGraphError` if execution loops exist.
+
+
+* `compute_execution_order(graph: nx.DiGraph) -> List[List[str]]`: Generates topologically sorted parallel execution stages (`nx.topological_generations` or `graphlib.TopologicalSorter`).
+
+
+
+
+
+---
+
+#### **4. Payload Contract Checker (`src/lp_compiler/contracts/contract_checker.py`)**
+
+* **Responsibility:** Leverages **Apache Hamilton** to build an in-memory execution graph that validates data-type compatibility across step boundaries before committing definitions to the database.
+
+
+* **Core Functions:**
+* `build_hamilton_driver(manifest: WorkflowManifestSpec) -> h_driver.Driver`: Compiles in-memory Hamilton node definitions with `@check_output` data validation decorators.
+
+
+* `verify_node_contracts(driver: h_driver.Driver, execution_order: List[str]) -> bool`: Dry-runs type checks across graph edges to ensure upstream step output types match downstream input expectations.
+
+
+
+
+
+---
+
+#### **5. Database Serializer (`src/lp_compiler/persistence/db_serializer.py`)**
+
+* **Responsibility:** Maps compiled workflow graphs into database payloads and handles async transactional inserts into target state tables.
+
+
+* **Core Functions:**
+* `to_db_payload(manifest: WorkflowManifestSpec, topo_order: List[List[str]]) -> dict`: Transforms verified models into versioned JSONB blobs matching DB column definitions.
+
+
+* `persist_workflow_definition(payload: dict, session: AsyncSession) -> UUID`: Executes SQLAlchemy `INSERT` into `lp_workflow_definitions`, returning the global definition identifier.
+
+
+
+
+
+---
+
+#### **6. Pipeline Orchestrator (`src/lp_compiler/orchestrator.py`)**
+
+* **Responsibility:** Exposes a clean, unified facade that chains Steps 1 through 5 sequentially.
+
+
+* **Core Functions:**
+* `compile_and_register_manifest(raw_yaml_str: str, session: AsyncSession) -> UUID`: Orchestrates the complete compilation lifecycle (Parsing $\rightarrow$ Model Compilation $\rightarrow$ Graph Validation $\rightarrow$ Contract Verification $\rightarrow$ Persistence).

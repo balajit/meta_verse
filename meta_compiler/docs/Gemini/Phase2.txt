@@ -1,0 +1,114 @@
+No implementation details yet till we finalize the detailed design
+
+---
+This is part of the MetaBuilder project.
+
+### Phase 1 Core Building Blocks Architecture
+
+```
+                                  [ YAML Manifest Specs ]
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │ Declarative Schema        │
+                               │ Compiler & DAG Validator  │
+                               └─────────────┬─────────────┘
+                                             │
+                                             ▼
+[ Legacy Pipeline ] ──(Shadow Interceptor)──►│ Task Execution Registry   │
+                                             │ & Handler Adapters        │
+                                             └─────────────┬─────────────┘
+                                                           │
+                                                           ▼
+                                             ┌───────────────────────────┐
+                                             │ DB State Engine           │
+                                             │ (Instance & Task FSM)     │
+                                             └───────────────────────────┘
+
+```
+
+---
+
+### 1. Core Database State Engine (FSM Infrastructure)
+
+Manages persistent state, idempotency checkpoints, and transition locks across task executions.
+
+* **`lp_workflow_definitions` Table:** Versioned registry storing DAG schemas, edge routing rules, and handler bindings in JSONB format.
+
+
+* **`lp_workflow_instances` Table:** Global state tracker for parent workflow runs (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `HALTED`).
+
+
+* **`lp_task_executions` Table:** Step-level execution log capturing attempts, execution windows, error codes, and JSONB pointers to input/output artifacts (`input_ref`, `output_ref`).
+
+
+* **State Transition Guard:** Atomic DB-level state machine enforcing valid transitions (e.g., `PENDING` $\rightarrow$ `RUNNING` $\rightarrow$ `COMPLETED` / `FAILED`).
+
+---
+
+### 2. Declarative Schema Compiler & DAG Validator
+
+Parses static YAML instruction manifests into validated runtime data structures and database models.
+
+* **YAML Ingestion & Normalization:** Compiles human-readable entity and workflow YAMLs into internal Pydantic models.
+* **Graph Topological Validation:** Executes cycle-detection algorithms (e.g., Kahn's Algorithm) to guarantee the workflow is a valid Directed Acyclic Graph (DAG) before database registration.
+* **Artifact Schema Enforcer:** Validates input and output payload boundaries using dynamic Pydantic schema generation, ensuring stage outputs meet downstream node expectations.
+
+---
+
+### 3. Task Handler Protocol & Execution Registry
+
+Provides a unified, stateless interface for execution steps, allowing current legacy pipeline components to function as modular task handlers.
+
+* **Standard Task Protocol:**
+```python
+class TaskContext(BaseModel):
+    workflow_instance_id: UUID
+    task_execution_id: UUID
+    document_id: UUID
+    parameters: Dict[str, Any] = {}
+
+class PipelineTaskHandler(Protocol):
+    stage_name: str
+    async def execute(self, ctx: TaskContext, inputs: Dict[str, Any]) -> Dict[str, Any]: ...
+
+```
+
+
+* **Task Handler Registry:** Thread-safe, key-value lookup mapping string step keys (e.g., `structural_normalizer`, `concept_extractor`) to executable handler instances.
+
+
+* **Legacy Component Adapters:** Thin wrappers transforming legacy methods (e.g., `DocumentLoop` functions) into standard `PipelineTaskHandler` protocol classes.
+
+
+
+---
+
+### 4. Non-Blocking Shadow Execution Engine (Dual-Write)
+
+Enables safe system verification by tracking pipeline state in parallel with live legacy executions without altering production logic.
+
+* **Event Interceptor Hook:** Wraps legacy stage boundaries to intercept execution events asynchronously.
+* **Asynchronous Shadow Dispatcher:** Uses background tasks (`asyncio.create_task` or worker queues) to mirror legacy inputs and outputs into `lp_task_executions`.
+
+
+* **Divergence Telemetry Harness:** Compares legacy state transitions against compiled state graph predictions, emitting telemetry logs for state discrepancies without throwing errors to end users.
+
+---
+
+User Input: Phase 1 is complete with implementation. We move to Phase2 detailed design.
+
+#### Phase 2: Namespace Registry & Inheritance Engine
+
+* **Goal:** Enable polymorphic entity extensions and channel/LOB workflow variants.  Design only step.
+
+
+* **Deliverables:**
+* Detailed design for namespace resolution engine (`global` $\rightarrow$ `industry` $\rightarrow$ `custom`).
+* Detailed design for FSM lifecycle state machine transitions for entities.
+
+
+* Realize initial **Learning Platform (LP)** and **Commerce Platform (CP)** base manifests.
+-----------------------------------------------------------------------------
+As a principle engineer at google, design the component architecture for Phase2.
+List all the functional components needed for the Phase2.

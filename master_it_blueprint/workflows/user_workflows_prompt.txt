@@ -1,0 +1,1037 @@
+ROLE
+
+You are a senior domain architect and workflow-modeling specialist responsible for translating natural-language business workflow specifications into a strictly schema-compliant service manifest.
+
+Your output will be consumed by an automated FastAPI/service generator. Therefore, correctness, determinism, schema compliance, and preservation of business intent are more important than explanatory prose.
+
+TASK
+
+Given a natural-language workflow specification, convert the described workflows into a JSON service manifest that conforms STRICTLY to the provided `manifest.schema.json`.
+
+The manifest schema is the authoritative contract.
+
+You must model workflows using only the structures and properties explicitly permitted by the manifest schema. Do not invent schema properties, workflow constructs, event models, conditions, metadata fields, or execution semantics that are not represented by the schema.
+
+The input may describe:
+- Entities and their attributes
+- Relationships between entities
+- Entity lifecycle/state transitions
+- Workflow steps
+- Dependencies between workflow steps
+- Business rules and validation conditions
+- Authorization requirements
+- Preconditions and guards
+- Side effects
+- Asynchronous processing
+- Retries
+- Publishing, activation, archival, or other lifecycle operations
+- Cross-workflow dependencies
+
+Translate these concepts into the closest valid representation supported by the manifest schema.
+
+SCHEMA
+
+Use the following JSON Schema as the ONLY structural contract for the output:
+
+<MANIFEST_SCHEMA>
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meta.internal/schemas/manifest.schema.json",
+  "title": "ServiceManifest",
+  "description": "Specification schema for zero-modification FastAPI service generation.",
+  "type": "object",
+  "required": [
+    "version",
+    "service_name",
+    "entities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "service_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "entities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/Entity"
+      }
+    },
+    "business_rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BusinessRule"
+      }
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Workflow"
+      }
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Policy"
+      }
+    }
+  },
+  "$defs": {
+    "Attribute": {
+      "type": "object",
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "str",
+            "int",
+            "float",
+            "bool",
+            "datetime",
+            "uuid",
+            "dict",
+            "list"
+          ]
+        },
+        "primary_key": {
+          "type": "boolean",
+          "default": false
+        },
+        "nullable": {
+          "type": "boolean",
+          "default": false
+        },
+        "unique": {
+          "type": "boolean",
+          "default": false
+        },
+        "indexed": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "Relationship": {
+      "type": "object",
+      "required": [
+        "name",
+        "target_entity",
+        "cardinality"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "target_entity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "1:N",
+            "N:M"
+          ]
+        },
+        "foreign_key": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "Transition": {
+      "type": "object",
+      "required": [
+        "trigger",
+        "source_state",
+        "target_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "trigger": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "source_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "FSM": {
+      "type": "object",
+      "required": [
+        "state_attribute",
+        "initial_state",
+        "states",
+        "transitions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "state_attribute": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initial_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Transition"
+          }
+        }
+      }
+    },
+    "Entity": {
+      "type": "object",
+      "required": [
+        "name",
+        "attributes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$"
+        },
+        "tableName": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "attributes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Attribute"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Relationship"
+          }
+        },
+        "fsm": {
+          "$ref": "#/$defs/FSM"
+        }
+      }
+    },
+    "BusinessRule": {
+      "type": "object",
+      "required": [
+        "name",
+        "target_entity",
+        "expression",
+        "error_message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "target_entity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1
+        },
+        "error_message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "WorkflowStep": {
+      "type": "object",
+      "required": [
+        "name",
+        "action"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3
+        }
+      }
+    },
+    "Workflow": {
+      "type": "object",
+      "required": [
+        "name",
+        "steps"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          }
+        }
+      }
+    },
+    "Policy": {
+      "type": "object",
+      "required": [
+        "name",
+        "roles",
+        "actions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "claims_required": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
+
+
+</MANIFEST_SCHEMA>
+
+
+OBJECTIVE
+
+Produce exactly one valid JSON manifest representing the supplied domain and workflows.
+
+The resulting manifest MUST:
+
+1. Validate against JSON Schema Draft 2020-12.
+2. Contain only properties defined by `manifest.schema.json`.
+3. Contain no additional properties.
+4. Use the exact property names, nesting, types, enums, and naming conventions defined by the schema.
+5. Preserve the business meaning of the source workflow specification as faithfully as the schema permits.
+6. Make workflow execution order and dependencies explicit wherever the source material provides them.
+7. Represent lifecycle/state behavior using `fsm` and `Transition` structures where appropriate.
+8. Represent explicit business validations and invariants using `business_rules` where appropriate.
+9. Represent workflow execution using `workflows` and `WorkflowStep`.
+10. Represent authorization requirements using `policies` where the source specifies roles, permissions, or claims.
+11. Avoid duplicating the same rule, state transition, relationship, or workflow unnecessarily.
+12. Never create a field merely because it would be useful if that field does not exist in the schema.
+
+STYLE
+
+Generate a deterministic, implementation-oriented manifest.
+
+Use:
+- `PascalCase` for entity names.
+- `snake_case` for service names, table names, attribute names, relationship names, workflow names, step names, business-rule names, policy names, and transition triggers.
+- Explicit dependencies through `depends_on`.
+- Explicit state transitions through `fsm.transitions`.
+- Explicit validation logic through `business_rules`.
+- Explicit authorization information through `policies`.
+- Explicit retry configuration through `max_retries` when retry behavior is specified.
+
+Use concise but sufficiently precise strings for:
+- workflow step `action`
+- transition `guards`
+- business-rule `expression`
+- business-rule `error_message`
+- policy actions
+- policy claims
+
+Do not encode information into free-form strings when that information can be represented structurally by an available schema property.
+
+TRANSLATION RULES
+
+A. ENTITIES
+
+When the source specification identifies a persistent domain entity:
+
+- Create an entry under `entities`.
+- Use `name` for the canonical domain entity name.
+- Use `tableName` when a persistence/table name is known or can be deterministically derived.
+- Represent every explicitly identified domain attribute under `attributes`.
+- Use `primary_key`, `nullable`, `unique`, and `indexed` only when supported by the source requirements or when unambiguously implied.
+- Do not invent attributes solely to support a workflow.
+- Represent explicit entity-to-entity associations under `relationships`.
+
+If an entity has a lifecycle such as draft, active, published, withdrawn, archived, deprecated, etc., model that lifecycle using `fsm` when it is part of the domain behavior.
+
+B. ATTRIBUTES
+
+Every attribute must use one of the exact types allowed by the schema:
+
+- `str`
+- `int`
+- `float`
+- `bool`
+- `datetime`
+- `uuid`
+- `dict`
+- `list`
+
+Do not introduce types such as:
+- `decimal`
+- `date`
+- `enum`
+- `json`
+- `object`
+- `array`
+- `timestamp`
+
+unless the supplied manifest schema explicitly permits them.
+
+When the source specifies an identifier as globally unique and the identifier is represented as a UUID, use `uuid` and `primary_key` as appropriate.
+
+C. RELATIONSHIPS
+
+Represent explicit relationships using:
+
+- `name`
+- `target_entity`
+- `cardinality`
+- `foreign_key`
+
+Only use cardinalities permitted by the schema:
+
+- `1:1`
+- `1:N`
+- `N:M`
+
+Do not invent relationship types such as `0:N`, `N:1`, `one_to_many`, or `many_to_many`.
+
+D. ENTITY STATE MACHINES
+
+When the source describes lifecycle states or transitions:
+
+- Create an `fsm` for the affected entity.
+- Set `state_attribute` to the actual state/status attribute.
+- Set `initial_state` to the explicitly stated initial state.
+- Include all explicitly identified states.
+- Represent every explicitly described transition using `Transition`.
+
+Each transition must contain:
+- `trigger`
+- `source_state`
+- `target_state`
+
+Represent explicit preconditions or guards using the transition's `guards` array.
+
+Do not create state transitions for actions that do not actually change entity state.
+
+Do not invent states merely because they seem useful.
+
+E. BUSINESS RULES
+
+Use `business_rules` for explicit domain invariants, validations, constraints, or conditions that must hold independently of a particular workflow step.
+
+Examples of concepts that may become business rules include:
+
+- uniqueness requirements
+- required relationships
+- publication prerequisites
+- validity constraints
+- eligibility conditions
+- integrity constraints
+- restrictions on state changes
+
+Each business rule must contain:
+
+- `name`
+- `target_entity`
+- `expression`
+- `error_message`
+
+The expression should be concise, deterministic, and implementation-oriented.
+
+Do not use business rules as a substitute for workflow ordering.
+
+F. WORKFLOWS
+
+Every independently identifiable business process should normally become a `Workflow`.
+
+Each workflow must contain:
+
+- `name`
+- `steps`
+
+Each workflow step must contain:
+
+- `name`
+- `action`
+
+Use `depends_on` to represent ordering and dependencies between steps.
+
+Do not rely solely on the physical array order of `steps` when the source explicitly describes dependencies.
+
+If step B cannot execute until step A succeeds, represent that relationship using:
+
+`"depends_on": ["step_a"]`
+
+Use stable, descriptive step names in `snake_case`.
+
+G. WORKFLOW ACTIONS
+
+The `action` field is a description of what the system or actor does.
+
+Actions should be specific enough for an implementation generator to understand the intended operation.
+
+Prefer:
+
+"validate_course_slug_uniqueness"
+
+over vague descriptions such as:
+
+"validate"
+
+Prefer:
+
+"set_course_status_to_available"
+
+over:
+
+"update course"
+
+Do not introduce pseudo-fields or hidden workflow metadata into the action string.
+
+When a workflow step performs a state transition, make the action consistent with the corresponding FSM transition.
+
+H. WORKFLOW DEPENDENCIES
+
+Translate explicit sequential instructions into dependencies.
+
+For example, if the source says:
+
+1. Validate data.
+2. Create the record.
+3. Publish the record.
+
+Represent this conceptually as:
+
+- `validate_data`
+- `create_record` depends on `validate_data`
+- `publish_record` depends on `create_record`
+
+Do not create artificial dependencies between steps that are independent.
+
+If the source explicitly indicates parallel or independent work, do not serialize it unnecessarily.
+
+I. RETRIES
+
+If the source specifies retry behavior, represent it using `max_retries`.
+
+If the source does not specify retry behavior, omit `max_retries` and allow the schema default to apply.
+
+Do not invent retry counts from assumptions.
+
+J. POLICIES
+
+If the source specifies roles, permissions, authorization, or required claims:
+
+- Create a `policy`.
+- Use `roles` for roles permitted to perform the operation.
+- Use `actions` for permitted actions.
+- Use `claims_required` when explicit claims are required.
+
+Do not invent roles or claims that are not supported by the source.
+
+K. ASYNCHRONOUS OPERATIONS
+
+If the source says that an operation triggers asynchronous processing, represent the operation as a workflow step with an implementation-oriented `action`.
+
+Represent subsequent processing steps using `depends_on` when the source establishes a dependency.
+
+Do not invent queues, workers, topics, jobs, events, callbacks, or infrastructure entities because the manifest schema has no explicit constructs for them.
+
+L. EVENTS AND SIDE EFFECTS
+
+If the source mentions events, notifications, cache invalidation, search-index updates, or other side effects:
+
+- Preserve the intent in the relevant workflow step `action`.
+- Do not create an event schema unless the supplied manifest schema explicitly supports events.
+- Do not invent event entities or properties.
+
+M. INFORMATION LOSS
+
+The source workflow may contain concepts that cannot be represented structurally by `manifest.schema.json`.
+
+When this happens:
+
+1. Preserve the concept using the closest valid schema construct.
+2. Prefer `business_rules`, `fsm`, `WorkflowStep.action`, `WorkflowStep.depends_on`, or `Policy` where semantically appropriate.
+3. Never add a property outside the schema to avoid information loss.
+4. Never modify the manifest schema.
+5. Never output comments explaining unsupported fields.
+
+N. INFERENCE
+
+You may make only conservative, deterministic inferences that are necessary to create a coherent manifest.
+
+Allowed inference examples:
+- Deriving a snake_case table name from an explicit entity name.
+- Identifying a primary key when the source explicitly says an identifier is the entity's unique identifier.
+- Deriving workflow step dependencies from explicit sequential ordering.
+- Creating an FSM when the source clearly describes an entity lifecycle.
+
+Disallowed inference examples:
+- Inventing entities not present or implied by the domain.
+- Inventing attributes.
+- Inventing roles.
+- Inventing states.
+- Inventing workflow steps.
+- Inventing external services.
+- Inventing events.
+- Inventing database constraints.
+- Inventing retry policies.
+- Inventing authorization claims.
+
+VALIDATION REQUIREMENTS
+
+Before producing the final response, internally validate the generated manifest against every applicable requirement below.
+
+STRUCTURAL VALIDATION:
+- Root is an object.
+- `version` exists and matches `X.Y.Z`.
+- `service_name` exists and matches the required pattern.
+- `entities` exists and contains at least one entity.
+- Every entity has `name` and at least one attribute.
+- Every object contains only schema-defined properties.
+- Every required property is present.
+- Every enum value is exactly one of the values permitted by the schema.
+- Every array satisfies its applicable minimum and item constraints.
+- Every string satisfies its applicable naming pattern.
+- Every integer/number satisfies its applicable numeric constraints.
+
+ENTITY VALIDATION:
+- Every referenced `target_entity` exists.
+- Every relationship uses a permitted cardinality.
+- Every relationship foreign key refers to an appropriate attribute where such a relationship is specified.
+- Every FSM references a valid state attribute.
+- The initial state exists in the FSM state list.
+- Every transition source state exists.
+- Every transition target state exists.
+- Every transition trigger follows the required naming convention.
+
+WORKFLOW VALIDATION:
+- Every workflow has at least one step.
+- Every workflow and step name follows the required naming convention.
+- Every `depends_on` reference points to a step in the same workflow.
+- No workflow step depends on itself.
+- Dependencies must not form a cycle.
+- Workflow actions must correspond to the source workflow intent.
+- State-changing workflow actions must be consistent with the relevant FSM.
+
+BUSINESS-RULE VALIDATION:
+- Every business rule references an existing entity.
+- Rule names follow the required naming convention.
+- Expressions are non-empty.
+- Error messages are non-empty.
+
+POLICY VALIDATION:
+- Every policy has at least one role and action.
+- Policy names follow the required naming convention.
+- Do not create policies unless authorization requirements are present or clearly implied by the source.
+
+CONSISTENCY VALIDATION:
+- Entity names, relationship targets, workflow references, FSM state attributes, business-rule targets, and policy references must use consistent naming.
+- Do not create multiple representations of the same domain concept.
+- Do not contradict explicit workflow ordering.
+- Do not create an FSM transition that contradicts the workflow.
+- Do not create business rules that contradict the workflow.
+- Do not introduce schema properties that are not defined in `manifest.schema.json`.
+
+OUTPUT CONTRACT
+
+Return ONLY the final JSON manifest.
+
+Do NOT return:
+- Markdown
+- Code fences
+- Explanations
+- Commentary
+- Analysis
+- Validation reports
+- Warnings
+- Notes
+- Alternative versions
+- The schema itself
+- Any text before or after the JSON
+
+The response must begin with `{` and end with `}`.
+
+The output must be directly parseable as JSON.
+
+INPUT WORKFLOW SPECIFICATION
+
+<WORKFLOW_SPECIFICATION>
+
+Course Entity Workflows
+
+* Course Creation & Metadata Drafting 
+    * Step 1: Instructor/Admin submits core metadata (title, slug, description, target audience, tags, default currency, price). 
+    * Step 2: System validates uniqueness of the course slug and generates a globally unique Course ID. 
+    * Step 3: System initializes the course state as DRAFT and creates a default system tag for indexing. 
+* Course Publishing & Availability 
+    * Step 1: System verifies that at least one published Course Version is linked to the course. 
+    * Step 2: Admin sets registration window dates and changes status from DRAFT to AVAILABLE. 
+    * Step 3: System emits a CoursePublished event to update search indices and catalog caches. 
+* Course Withdrawal (Registration Lock) 
+    * Step 1: Admin triggers withdrawal request; system validates that existing enrolled students are not impacted. 
+    * Step 2: System transitions course status to WITHDRAWN, preventing new checkout sessions. 
+    * Step 3: System purges or flags the course in public catalog search indices while retaining access for active enrollments. 
+2. Course Version / Syllabus Workflows
+
+* Version Versioning & Drafting 
+    * Step 1: Content Author initiates a new version (e.g., v1.0 -> v2.0) linked to a parent Course ID. 
+    * Step 2: System deep-copies structural nodes from the prior version or initializes an empty syllabus tree. 
+    * Step 3: Version status set to IN_DEVELOPMENT. 
+* Syllabus Freeze & Activation 
+    * Step 1: Author submits version for publication check (validates presence of modules, lessons, and valid assets). 
+    * Step 2: System marks version state as ACTIVE, setting previous versions to DEPRECATED (read-only for legacy students). 
+    * Step 3: System attaches the active version pointer to the primary Course record for new enrollments. 
+3. Module / Unit Workflows
+
+* Module Reordering & Structuring 
+    * Step 1: Author creates or reorders modules within a specific Course Version ID. 
+    * Step 2: System updates ordinal sequence indices (sequence_order) and recalculates total estimated completion time for the parent version. 
+    * Step 3: System validates lock/prerequisite conditions between modules. 
+4. Lesson / Content Item Workflows
+
+* Content Ingestion & Processing 
+    * Step 1: Author uploads media/text/quiz payload to a lesson entry within a module. 
+    * Step 2: System triggers asynchronous media encoding/transcoding workers and returns pre-signed asset URLs. 
+    * Step 3: On successful processing, system marks content status as READY and updates lesson duration metrics. 
+5. Study Plan Template Workflows
+
+* Pacing Profile Generation 
+    * Step 1: Author defines milestone intervals (e.g., weekly targets, relative day offsets) against a Course Version. 
+    * Step 2: System maps each lesson in the version to a recommended relative completion day (e.g., Lesson 1 -> Day 2). 
+    * Step 3: Template is flagged as PUBLISHED and bound to the active Course Version. 
+Workflow Interconnections & Uber Lifecycle Flow
+
+The entities in the Course Catalog domain operate as a hierarchical pipeline where state changes propagate downstream to ensure system consistency.
+
+[Course Drafted] ──> [Course Version Created] ──> [Modules & Lessons Attached]
+                            │                               │
+                            ▼                               ▼
+                 [Study Plan Bound] ◄────────────── [Content Transcoded]
+                            │
+                            ▼
+                [Version Published] ──> [Course Status: AVAILABLE]
+                                                  │
+                                                  ▼
+                                       [Course Status: WITHDRAWN]
+Uber Lifecycle Flow (Draft to Archival)
+
+1. Initialization: Admin creates a base Course (DRAFT). 
+2. Authoring: Author creates Course Version v1.0, builds the structural Modules, uploads Lessons (triggering media processing), and defines the Study Plan Template. 
+3. Publication Pipeline: Author publishes Course Version v1.0. The system links v1.0 as the active syllabus, validates content readiness, and transitions the Course state to AVAILABLE. 
+4. Active Phase: The course accepts enrollments; new students inherit v1.0 and its associated Study Plan Template. 
+5. Lifecycle End: Admin withdraws the course (WITHDRAWN). Public discovery and new registrations halt, but active students continue consuming v1.0 through their independent enrollment runtime.
+
+</WORKFLOW_SPECIFICATION>  <DOMAIN_ENTITIES>  {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://learning-platform.example.com/schemas/user-identity-domain.json",
+  "title": "User and Identity Domain Model",
+  "description": "Reusable JSON Schema definitions for student profiles, instructors or educators, linked Google SSO identities, preferences, communication settings, and user security sessions.",
+  "$defs": {
+    "StudentProfile": {
+      "type": "object",
+      "title": "Student Profile",
+      "description": "Primary domain entity capturing student identity, linked Google SSO provider credentials, preferences, timezone, and communication settings.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the student profile."
+        },
+        "identity": {
+          "$ref": "#/$defs/StudentIdentity",
+          "description": "Identity information associated with the student profile."
+        },
+        "googleSsoCredentials": {
+          "$ref": "#/$defs/GoogleSsoCredentials",
+          "description": "Linked Google Single Sign-On identity associated with the student profile."
+        },
+        "preferences": {
+          "$ref": "#/$defs/StudentPreferences",
+          "description": "Preferences associated with the student's experience."
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Timezone associated with the student's profile."
+        },
+        "communicationSettings": {
+          "$ref": "#/$defs/CommunicationSettings",
+          "description": "Settings governing communication with the student."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "StudentIdentity": {
+      "type": "object",
+      "title": "Student Identity",
+      "description": "Identity information representing the student.",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address representing the student's identity."
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name by which the student is identified."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GoogleSsoCredentials": {
+      "type": "object",
+      "title": "Google SSO Credentials",
+      "description": "Information linking the student profile to a Google Single Sign-On identity.",
+      "properties": {
+        "provider": {
+          "const": "google",
+          "description": "Identity provider associated with the linked Single Sign-On identity."
+        },
+        "providerSubject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Subject identifier assigned by Google to the linked identity."
+        },
+        "linkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the Google identity was linked to the student profile."
+        }
+      },
+      "required": [
+        "provider",
+        "providerSubject"
+      ],
+      "additionalProperties": false
+    },
+    "StudentPreferences": {
+      "type": "object",
+      "title": "Student Preferences",
+      "description": "Preferences associated with the student's experience.",
+      "properties": {
+        "preferredLanguage": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Preferred language for the student's experience."
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommunicationSettings": {
+      "type": "object",
+      "title": "Communication Settings",
+      "description": "Settings governing communication with the student.",
+      "properties": {
+        "emailNotificationsEnabled": {
+          "type": "boolean",
+          "description": "Indicates whether email communications are enabled for the student."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Instructor": {
+      "type": "object",
+      "title": "Instructor / Educator",
+      "description": "Domain entity representing a content creator or instructor assigned to manage or deliver specific courses.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the instructor or educator."
+        },
+        "assignedCourseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Identifiers referencing courses assigned to the instructor for management or delivery."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "UserSession": {
+      "type": "object",
+      "title": "User Session",
+      "description": "Active or historical security session tracking authentication method, IP address, device fingerprint, and authorization tokens.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the user session."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the identity associated with the security session."
+        },
+        "authenticationMethod": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Authentication method used to establish the session."
+        },
+        "ipAddress": {
+          "type": "string",
+          "minLength": 1,
+          "description": "IP address associated with the security session."
+        },
+        "deviceFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Device fingerprint associated with the security session."
+        },
+        "authorizationTokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Authorization token values associated with the security session."
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session was established."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session expires, when an expiration time applies."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Indicates whether the security session is currently active."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "authenticationMethod",
+        "startedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
+</DOMAIN_ENTITIES>
+
+FINAL INSTRUCTION
+
+Using the supplied workflow specification and the supplied `manifest.schema.json`, generate exactly one implementation-ready JSON service manifest.
+
+The manifest schema is authoritative.
+
+When the workflow specification and your assumptions conflict, follow the workflow specification for business meaning but follow the manifest schema for structure.
+
+Never modify, extend, reinterpret, or bypass the manifest schema.
+
+Return only valid JSON.

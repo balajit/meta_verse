@@ -1,0 +1,1879 @@
+--Author
+Author: Gemini Public API Flash
+Thought Provoker: A google user
+
+----------------------------------
+---Design Input:
+
+Core Project structure
+```
+src/lp_compiler/
+├── __init__.py
+├── config.py                         # Environment configs & meta-schema path settings
+├── schemas/
+│   └── meta_schema_v1.json           # JSON Schema Draft 2020-12 static rules
+├── guards/
+│   ├── __init__.py
+│   └── syntax_guard.py               # Step 1: jsonschema structural validation
+├── compilers/
+│   ├── __init__.py
+│   ├── models.py                     # Pydantic V2 core models & dynamic specs
+│   └── model_compiler.py             # Step 2: Typed model synthesis & payload bounds
+├── validators/
+│   ├── __init__.py
+│   └── topology_validator.py         # Step 3: NetworkX DiGraph & cycle detection
+├── contracts/
+│   ├── __init__.py
+│   └── contract_checker.py           # Step 4: Apache Hamilton in-memory DAG checks
+├── persistence/
+│   ├── __init__.py
+│   └── db_serializer.py              # Step 5: SQLAlchemy async JSONB persistence
+└── orchestrator.py                   # Main pipeline facade orchestrating Steps 1–5
+
+```
+
+---
+
+### Module Responsibilities & Core Functions
+
+#### **1. Syntax Guard (`src/lp_compiler/guards/syntax_guard.py`)**
+
+* **Responsibility:** Ingests raw YAML/JSON specifications and validates overall structure against static JSON Schema Draft 2020-12 rules prior to dynamic model creation.
+
+
+* **Core Functions:**
+* `load_meta_schema(schema_path: Path) -> dict`: Loads and caches the base validation schema from disk.
+* `validate_manifest_syntax(raw_manifest: dict) -> dict`: Executes `jsonschema.validate()`, raising structured `SyntaxValidationError` on schema mismatches.
+
+
+
+
+
+---
+
+#### **2. Dynamic Model Compiler (`src/lp_compiler/compilers/`)**
+
+* **Responsibility:** Translates raw dictionary structures into typed dynamic runtime Pydantic objects, enforcing validation on payload boundaries (`input_ref`, `output_ref`).
+
+
+* **Core Models (`models.py`):**
+* `TaskNodeSpec(BaseModel)`: Node execution metadata, task parameters, and dependency aliases.
+
+
+* `ArtifactRefSpec(BaseModel)`: Pointer types for input/output schema bindings (`input_ref`, `output_ref`).
+
+
+* `WorkflowManifestSpec(BaseModel)`: Global workflow definition wrapping task nodes and edge routes.
+
+
+
+
+* **Core Functions (`model_compiler.py`):**
+* `compile_runtime_models(validated_manifest: dict) -> WorkflowManifestSpec`: Materializes dynamic Pydantic models from raw dicts.
+
+
+* `build_dynamic_artifact_schema(ref_spec: ArtifactRefSpec) -> Type[BaseModel]`: Generates dynamic Pydantic data wrappers for input/output validation at task boundaries.
+
+
+
+
+
+---
+
+#### **3. Topological Validator (`src/lp_compiler/validators/topology_validator.py`)**
+
+* **Responsibility:** Construct a `NetworkX` directed graph (`DiGraph`) from compiled node dependency mappings to verify acyclic guarantees and establish execution ordering.
+
+
+* **Core Functions:**
+* `build_networkx_graph(manifest: WorkflowManifestSpec) -> nx.DiGraph`: Populates graph nodes and directed dependency edges.
+
+
+* `assert_acyclic_topology(graph: nx.DiGraph) -> List[str]`: Evaluates `nx.is_directed_acyclic_graph()`; raises `CyclicGraphError` if execution loops exist.
+
+
+* `compute_execution_order(graph: nx.DiGraph) -> List[List[str]]`: Generates topologically sorted parallel execution stages (`nx.topological_generations` or `graphlib.TopologicalSorter`).
+
+
+
+
+
+---
+
+#### **4. Payload Contract Checker (`src/lp_compiler/contracts/contract_checker.py`)**
+
+* **Responsibility:** Leverages **Apache Hamilton** to build an in-memory execution graph that validates data-type compatibility across step boundaries before committing definitions to the database.
+
+
+* **Core Functions:**
+* `build_hamilton_driver(manifest: WorkflowManifestSpec) -> h_driver.Driver`: Compiles in-memory Hamilton node definitions with `@check_output` data validation decorators.
+
+
+* `verify_node_contracts(driver: h_driver.Driver, execution_order: List[str]) -> bool`: Dry-runs type checks across graph edges to ensure upstream step output types match downstream input expectations.
+
+
+
+
+
+---
+
+#### **5. Database Serializer (`src/lp_compiler/persistence/db_serializer.py`)**
+
+* **Responsibility:** Maps compiled workflow graphs into database payloads and handles async transactional inserts into target state tables.
+
+
+* **Core Functions:**
+* `to_db_payload(manifest: WorkflowManifestSpec, topo_order: List[List[str]]) -> dict`: Transforms verified models into versioned JSONB blobs matching DB column definitions.
+
+
+* `persist_workflow_definition(payload: dict, session: AsyncSession) -> UUID`: Executes SQLAlchemy `INSERT` into `lp_workflow_definitions`, returning the global definition identifier.
+
+
+
+
+
+---
+
+#### **6. Pipeline Orchestrator (`src/lp_compiler/orchestrator.py`)**
+
+* **Responsibility:** Exposes a clean, unified facade that chains Steps 1 through 5 sequentially.
+
+
+* **Core Functions:**
+* `compile_and_register_manifest(raw_yaml_str: str, session: AsyncSession) -> UUID`: Orchestrates the complete compilation lifecycle (Parsing $\rightarrow$ Model Compilation $\rightarrow$ Graph Validation $\rightarrow$ Contract Verification $\rightarrow$ Persistence).
+
+
+--------------------------------------------
+Implementation Phase:
+Step 0
+User Input:
+Create a script to create the directory structures and README.md for each directory and empty files as place holders for the py files.
+uv will be our package manager
+
+Gemini Design:
+```markdown
+# Meta-Builder Compiler Engine (`meta_compiler`)
+
+The `meta_compiler` package is the core specification compilation and graph validation engine for Meta-Builder[cite: 22]. It processes declarative YAML specifications through a five-stage pipeline to validate syntax, enforce typed data boundaries, verify DAG topologies, dry-run node contract compatibility, and serialize verified execution graphs into PostgreSQL state storage (`meta_workflow_definitions`)[cite: 15, 20, 22].
+
+---
+
+## 🏗 Package Structure
+
+```text
+src/meta_compiler/
+├── __init__.py
+├── config.py                         # Environment configurations & meta-schema paths
+├── schemas/
+│   └── meta_schema_v1.json           # JSON Schema Draft 2020-12 static rules
+├── guards/
+│   ├── __init__.py
+│   └── syntax_guard.py               # Step 1: jsonschema structural validation
+├── compilers/
+│   ├── __init__.py
+│   ├── models.py                     # Pydantic V2 core models & dynamic specs
+│   └── model_compiler.py             # Step 2: Typed model synthesis & payload bounds
+├── validators/
+│   ├── __init__.py
+│   └── topology_validator.py         # Step 3: NetworkX DiGraph & cycle detection
+├── contracts/
+│   ├── __init__.py
+│   └── contract_checker.py           # Step 4: Apache Hamilton in-memory DAG checks
+├── persistence/
+│   ├── __init__.py
+│   └── db_serializer.py              # Step 5: SQLAlchemy async JSONB persistence
+└── orchestrator.py                   # Main pipeline facade orchestrating Steps 1–5
+
+```
+
+---
+
+## ⚡ Five-Stage Compilation Pipeline
+
+| Stage | Module | Primary Tooling | Responsibilities & Operations |
+| --- | --- | --- | --- |
+| **1. Syntax Guard** | `guards/syntax_guard.py` | `jsonschema` | Ingests raw YAML/JSON specs and performs baseline structural checks against Draft 2020-12 meta-schemas before runtime instantiation.
+
+ |
+| **2. Dynamic Model Compiler** | `compilers/model_compiler.py` | `Pydantic V2` | Materializes typed runtime specs (`WorkflowManifestSpec`, `TaskNodeSpec`, `ArtifactRefSpec`) and enforces input/output boundary constraints (`input_ref`, `output_ref`).
+
+ |
+| **3. Topological Validator** | `validators/topology_validator.py` | `NetworkX` | Constructs a `DiGraph` from task dependencies, verifies acyclic integrity (`assert_acyclic_topology`), and calculates topological execution ordering.
+
+ |
+| **4. Payload Contract Checker** | `contracts/contract_checker.py` | `Apache Hamilton` | Builds an in-memory execution graph with `@check_output` hooks to dry-run and verify type compatibility across node boundaries prior to DB commits.
+
+ |
+| **5. Database Serializer** | `persistence/db_serializer.py` | `SQLAlchemy` (`asyncpg`) | Transforms verified graphs into versioned JSONB blobs and handles transactional persistence into `meta_workflow_definitions`.
+
+ |
+
+---
+
+## 🛠 Function Interface Reference
+
+**Pipeline Orchestrator (`orchestrator.py`)**
+
+* `compile_and_register_manifest(raw_yaml_str: str, session: AsyncSession) -> UUID`: Executes the unified pipeline facade (Parsing $\rightarrow$ Synthesis $\rightarrow$ Topology Validation $\rightarrow$ Contract Verification $\rightarrow$ Persistence).
+
+
+
+**Step 1: Syntax Guard (`guards/syntax_guard.py`)**
+
+* `load_meta_schema(schema_path: Path) -> dict`: Loads and caches the static validation schema from disk.
+
+
+* `validate_manifest_syntax(raw_manifest: dict) -> dict`: Executes structural validation against static meta-schemas, raising `SyntaxValidationError` on failure.
+
+
+
+**Step 2: Dynamic Model Compiler (`compilers/model_compiler.py` & `models.py`)**
+
+* `compile_runtime_models(validated_manifest: dict) -> WorkflowManifestSpec`: Materializes dynamic Pydantic specifications from dicts.
+
+
+* `build_dynamic_artifact_schema(ref_spec: ArtifactRefSpec) -> Type[BaseModel]`: Synthesizes dynamic Pydantic data wrappers for step input/output validation.
+
+
+
+**Step 3: Topological Validator (`validators/topology_validator.py`)**
+
+* `build_networkx_graph(manifest: WorkflowManifestSpec) -> nx.DiGraph`: Populates graph nodes and directed edge dependencies.
+
+
+* `assert_acyclic_topology(graph: nx.DiGraph) -> List[str]`: Asserts graph acyclicity using standard algorithms; raises `CyclicGraphError` if execution loops exist.
+
+
+* `compute_execution_order(graph: nx.DiGraph) -> List[List[str]]`: Generates topologically sorted parallel execution stages.
+
+
+
+**Step 4: Payload Contract Checker (`contracts/contract_checker.py`)**
+
+* `build_hamilton_driver(manifest: WorkflowManifestSpec) -> h_driver.Driver`: Compiles in-memory Hamilton node definitions with output validation hooks.
+
+
+* `verify_node_contracts(driver: h_driver.Driver, execution_order: List[str]) -> bool`: Dry-runs type checks across edges to ensure upstream output types match downstream expectations.
+
+
+
+**Step 5: Database Serializer (`persistence/db_serializer.py`)**
+
+* `to_db_payload(manifest: WorkflowManifestSpec, topo_order: List[List[str]]) -> dict`: Transforms verified models into versioned DB JSONB payloads.
+
+
+* `persist_workflow_definition(payload: dict, session: AsyncSession) -> UUID`: Performs async transactional inserts into `meta_workflow_definitions` and returns definition identifiers.
+
+
+
+---
+
+## 🚀 Environment & Tooling Setup
+
+This project uses `uv` for workspace environment and dependency management.
+
+```bash
+# Initialize dependency env and sync requirements
+uv sync
+
+# Add project dependencies
+uv add pydantic jsonschema networkx sf-hamilton sqlalchemy asyncpg pyyaml
+
+```
+
+```
+
+----------------------------
+
+User Input: Establish the sequencing of the python file creation based on the dependencies
+
+Gemini Design:
+
+Step 1: Configuration & Static Schemas (src/meta_compiler/config.py, src/meta_compiler/schemas/meta_schema_v1.json)
+  │
+  ▼
+Step 2: Core Domain Models (src/meta_compiler/compilers/models.py)
+  │
+  ├──► Step 3: Syntax Guard (src/meta_compiler/guards/syntax_guard.py)
+  │
+  ├──► Step 4: Dynamic Model Compiler (src/meta_compiler/compilers/model_compiler.py)
+  │      │
+  │      ▼
+  ├──► Step 5: Topological Validator (src/meta_compiler/validators/topology_validator.py)
+  │      │
+  │      ▼
+  ├──► Step 6: Payload Contract Checker (src/meta_compiler/contracts/contract_checker.py)
+  │      │
+  │      ▼
+  └──► Step 7: Database Serializer (src/meta_compiler/persistence/db_serializer.py)
+         │
+         ▼
+Step 8: Pipeline Orchestrator (src/meta_compiler/orchestrator.py)
+
+Based on the architectural flow and internal code dependencies of the `meta_compiler` package, here is the optimal step-by-step implementation sequencing. Building modules in this order guarantees that every file depends only on previously materialized modules, preventing circular imports and enabling isolated unit testing at each phase.
+
+---
+
+### Implementation Sequencing & Dependency Graph
+
+```text
+Step 1: Configuration & Static Schemas (src/meta_compiler/config.py, src/meta_compiler/schemas/meta_schema_v1.json)
+  │
+  ▼
+Step 2: Core Domain Models (src/meta_compiler/compilers/models.py)
+  │
+  ├──► Step 3: Syntax Guard (src/meta_compiler/guards/syntax_guard.py)
+  │
+  ├──► Step 4: Dynamic Model Compiler (src/meta_compiler/compilers/model_compiler.py)
+  │      │
+  │      ▼
+  ├──► Step 5: Topological Validator (src/meta_compiler/validators/topology_validator.py)
+  │      │
+  │      ▼
+  ├──► Step 6: Payload Contract Checker (src/meta_compiler/contracts/contract_checker.py)
+  │      │
+  │      ▼
+  └──► Step 7: Database Serializer (src/meta_compiler/persistence/db_serializer.py)
+         │
+         ▼
+Step 8: Pipeline Orchestrator (src/meta_compiler/orchestrator.py)
+
+```
+
+---
+
+### Phase-by-Phase Execution Order
+
+#### **Phase 1: Environment & Base Infrastructure**
+
+1. **`src/meta_compiler/config.py`**
+* **Why first:** Holds workspace environment variables, settings, and filesystem paths (e.g., `META_SCHEMA_V1_PATH`) required across all subsequent modules.
+
+
+
+
+2. **`src/meta_compiler/schemas/meta_schema_v1.json`**
+* **Why second:** Static JSON Schema definition (Draft 2020-12) needed by `config.py` paths and the syntax guard.
+
+
+
+
+
+---
+
+#### **Phase 2: Core Specifications & Types**
+
+3. **`src/meta_compiler/compilers/models.py`**
+* **Why third:** Defines fundamental Pydantic models (`TaskNodeSpec`, `ArtifactRefSpec`, `WorkflowManifestSpec`). Every downstream component (compilers, graph validators, contract checkers, serializers) imports these models.
+
+
+
+
+
+---
+
+#### **Phase 3: Pipeline Stage Implementation (Steps 1 through 5)**
+
+4. **`src/meta_compiler/guards/syntax_guard.py` (Step 1)**
+* **Dependencies:** `config.py`, `schemas/meta_schema_v1.json`.
+
+
+* **Role:** Ingests raw dicts/YAML and performs initial `jsonschema` structural checks.
+
+
+
+
+5. **`src/meta_compiler/compilers/model_compiler.py` (Step 2)**
+* **Dependencies:** `compilers/models.py`.
+
+
+* **Role:** Transforms validated dictionaries into runtime `WorkflowManifestSpec` instances and builds dynamic Pydantic artifact wrappers (`build_dynamic_artifact_schema`).
+
+
+
+
+6. **`src/meta_compiler/validators/topology_validator.py` (Step 3)**
+* **Dependencies:** `compilers/models.py`.
+
+
+* **Role:** Ingests `WorkflowManifestSpec` to build `NetworkX` `DiGraph` objects, verify acyclic guarantees, and compute topological stage groupings.
+
+
+
+
+7. **`src/meta_compiler/contracts/contract_checker.py` (Step 4)**
+* **Dependencies:** `compilers/models.py`, outputs from `topology_validator.py`.
+
+
+* **Role:** Constructs in-memory Apache Hamilton execution drivers using the topological execution order to verify payload data-type compatibility across step boundaries.
+
+
+
+
+8. **`src/meta_compiler/persistence/db_serializer.py` (Step 5)**
+* **Dependencies:** `compilers/models.py`, outputs from `topology_validator.py`.
+
+
+* **Role:** Converts compiled specs and topological generation stages into DB JSONB payloads and executes async SQLAlchemy inserts into `meta_workflow_definitions`.
+
+
+
+
+
+---
+
+#### **Phase 4: Facade Assembly**
+
+9. **`src/meta_compiler/orchestrator.py`**
+* **Dependencies:** Steps 1 through 5 (`syntax_guard.py`, `model_compiler.py`, `topology_validator.py`, `contract_checker.py`, `db_serializer.py`).
+
+
+* **Role:** Provides `compile_and_register_manifest()`, chaining the complete pipeline sequentially from raw YAML parsing through async persistence.
+----------------------------------------------------
+
+User Input: Coding phase begins, As a google programmer, use the highest level of knowledge to implement the following Phase1 artifacts.
+Phase 1: Environment & Base Infrastructuresrc/meta_compiler/config.pyWhy first: Holds workspace environment variables, settings, and filesystem paths (e.g., META_SCHEMA_V1_PATH) required across all subsequent modules.  src/meta_compiler/schemas/meta_schema_v1.jsonWhy second: Static JSON Schema definition (Draft 2020-12) needed by config.py paths and the syntax guard.
+
+Gemini Design: code written
+"""Environment settings and path definitions for the meta_compiler package."""
+
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class CompilerSettings(BaseSettings):
+    """Centralized configuration settings for meta_compiler.
+
+    Attributes:
+        environment: Execution environment identifier (e.g., 'development', 'production').
+        log_level: Severity threshold for the logger.
+        meta_schema_v1_path: Filepath pointing to static Draft 2020-12 meta-schema.
+        db_connection_url: Async SQLAlchemy connection string for target state tables.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="META_COMPILER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: str = Field(default="development", description="Runtime environment")
+    log_level: str = Field(default="INFO", description="Logging output level")
+
+    meta_schema_v1_path: Path = Field(
+        default_factory=lambda: Path(__file__).parent / "schemas" / "meta_schema_v1.json",
+        description="Absolute path to static meta schema v1 JSON",
+    )
+
+    db_connection_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/meta_builder",
+        description="Async PostgreSQL connection URL for workflow definitions",
+    )
+
+    def validate_paths(self) -> None:
+        """Verifies that all required static asset paths exist on disk."""
+        if not self.meta_schema_v1_path.exists():
+            raise FileNotFoundError(
+                f"Meta-schema file not found at path: {self.meta_schema_v1_path}"
+            )
+
+
+# Singleton settings instance accessible across subpackages
+settings = CompilerSettings()
+settings.validate_paths()
+
+src/meta_compiler/schemas/meta_schema_v1.jsonThis JSON Schema (Draft 2020-12) enforces strict structural requirements on raw manifest dictionaries prior to Pydantic instantiation.  JSON{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meta-builder.internal/schemas/meta_schema_v1.json",
+  "title": "WorkflowManifestMetaSchemaV1",
+  "description": "Static structural rules for Meta-Builder workflow manifests.",
+  "type": "object",
+  "required": ["version", "namespace", "name", "tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+(\\.[0-9]+)*$"
+    },
+    "namespace": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/TaskNode"
+      }
+    }
+  },
+  "$defs": {
+    "ArtifactRef": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "schema_def": {
+          "type": "object"
+        }
+      }
+    },
+    "TaskNode": {
+      "type": "object",
+      "required": ["id", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "action": {
+          "type": "string"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}
+
+---------------------
+
+User Input: As a google programmer, use the highest level of knowledge to implement the following Phase1 artifacts.
+
+#### **Phase 2: Core Specifications & Types**
+
+3. **`src/meta_compiler/compilers/models.py`**
+* **Why third:** Defines fundamental Pydantic models (`TaskNodeSpec`, `ArtifactRefSpec`, `WorkflowManifestSpec`). Every downstream component (compilers, graph validators, contract checkers, serializers) imports these models.
+
+Gemini Design: Code implemented
+
+"""Dynamic model compiler module for meta_compiler.
+
+Translates raw manifest dictionary structures into typed runtime Pydantic objects
+and provides task-node level compilation and schema synthesis utilities.
+"""
+
+import logging
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+
+from meta_compiler.compilers.models import (
+    ArtifactRefSpec,
+    TaskNodeSpec,
+    WorkflowManifestSpec,
+)
+
+logger = logging.getLogger("meta_compiler.compilers.model_compiler")
+
+
+class ModelCompilationError(Exception):
+    """Raised when dynamic Pydantic model synthesis or manifest compilation fails."""
+
+    def __init__(self, message: str, details: Any = None) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+def compile_runtime_models(validated_manifest: dict[str, Any]) -> WorkflowManifestSpec:
+    """Materializes typed runtime Pydantic models from a validated raw dictionary.
+
+    Args:
+        validated_manifest: Dictionary matching baseline structural meta-schema rules.
+
+    Returns:
+        WorkflowManifestSpec: Strongly typed immutable manifest specification.
+
+    Raises:
+        ModelCompilationError: If Pydantic model initialization or field parsing fails.
+    """
+    logger.debug("Compiling runtime Pydantic models from manifest dict")
+    try:
+        manifest_spec = WorkflowManifestSpec.model_validate(validated_manifest)
+        logger.info(
+            "Successfully compiled runtime spec for workflow '%s/%s' (%d tasks)",
+            manifest_spec.namespace,
+            manifest_spec.name,
+            len(manifest_spec.tasks),
+        )
+        return manifest_spec
+    except ValidationError as err:
+        logger.error(
+            "Validation failure during WorkflowManifestSpec compilation: %s", err
+        )
+        raise ModelCompilationError(
+            f"Failed to compile WorkflowManifestSpec: {err}", details=err.errors()
+        ) from err
+    except Exception as err:
+        logger.error("Unexpected error during model compilation: %s", err)
+        raise ModelCompilationError(
+            f"Unexpected error during manifest compilation: {err}"
+        ) from err
+
+
+def compile_task_node(task_dict: dict[str, Any]) -> TaskNodeSpec:
+    """Compiles a single raw dictionary definition into a validated TaskNodeSpec.
+
+    Args:
+        task_dict: Raw dictionary describing a single task node.
+
+    Returns:
+        TaskNodeSpec: Validated TaskNodeSpec instance.
+
+    Raises:
+        ModelCompilationError: If task dictionary validation fails.
+    """
+    try:
+        return TaskNodeSpec.model_validate(task_dict)
+    except ValidationError as err:
+        raise ModelCompilationError(
+            f"Failed to compile TaskNodeSpec for task '{task_dict.get('id', 'unknown')}': {err}",
+            details=err.errors(),
+        ) from err
+
+
+def extract_task_artifact_schemas(
+    node: TaskNodeSpec,
+) -> dict[str, tuple[list[type[BaseModel]], list[type[BaseModel]]]]:
+    """Generates dynamic runtime Pydantic boundary models for a specific TaskNodeSpec's inputs and outputs.
+
+    Args:
+        node: The TaskNodeSpec instance to process.
+
+    Returns:
+        dict mapped by task ID containing a tuple of (input_schemas, output_schemas).
+    """
+    input_schemas = [build_dynamic_artifact_schema(ref) for ref in node.inputs]
+    output_schemas = [build_dynamic_artifact_schema(ref) for ref in node.outputs]
+    return {node.id: (input_schemas, output_schemas)}
+
+
+def build_dynamic_artifact_schema(
+    ref_spec: ArtifactRefSpec,
+) -> type[BaseModel]:
+    """Synthesizes dynamic Pydantic models for artifact validation at task boundaries.
+
+    If `schema_def` is supplied within the `ArtifactRefSpec`, this function uses
+    `create_model` to generate a dynamic runtime model enforcing field boundary constraints.
+    Otherwise, a fallback payload wrapper matching the specified primitive/compound type is returned.
+
+    Args:
+        ref_spec: Artifact reference specification describing data constraints.
+
+    Returns:
+        type[BaseModel]: Dynamically generated Pydantic class ready for payload instantiation.
+
+    Raises:
+        ModelCompilationError: If dynamic schema construction fails.
+    """
+    class_name = f"DynamicArtifact_{ref_spec.name.title().replace('_', '')}Payload"
+    logger.debug("Building dynamic artifact schema wrapper for '%s'", ref_spec.name)
+
+    try:
+        if ref_spec.schema_def:
+            fields: dict[str, Any] = {}
+            for field_name, field_info in ref_spec.schema_def.get("properties", {}).items():
+                fields[field_name] = (Any, ...)
+
+            dynamic_model = create_model(
+                class_name,
+                __config__=ConfigDict(extra="forbid", frozen=True),
+                **fields,
+            )
+            return dynamic_model
+
+        fields = {
+            "payload": (Any, ...),
+        }
+        dynamic_model = create_model(
+            class_name,
+            __config__=ConfigDict(extra="allow", frozen=True),
+            **fields,
+        )
+        return dynamic_model
+
+    except Exception as err:
+        logger.error(
+            "Failed to construct dynamic Pydantic schema for artifact '%s': %s",
+            ref_spec.name,
+            err,
+        )
+        raise ModelCompilationError(
+            f"Failed to build dynamic schema for artifact '{ref_spec.name}': {err}"
+        ) from err
+
+
+     """Core Pydantic V2 domain specifications and models for meta_compiler."""
+
+from typing import Any, Dict, List, Optional
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ArtifactRefSpec(BaseModel):
+    """Specifies an input or output data artifact binding for a task node.
+
+    Attributes:
+        name: Unique logical identifier for the artifact within task context.
+        type: Primary primitive or compound data type (e.g., 'string', 'dict', 'dataframe').
+        schema_def: Optional JSON Schema dictionary defining internal payload contracts.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    name: str = Field(..., min_length=1, description="Artifact identifier name")
+    type: str = Field(..., min_length=1, description="Data type specification")
+    schema_def: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional schema payload validation rules",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def validate_name_identifier(cls, v: str) -> str:
+        """Enforces clean variable naming rules for artifact handles."""
+        if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", v):
+            raise ValueError(
+                f"Artifact name '{v}' must be a valid Python identifier (letters, numbers, underscores)."
+            )
+        return v
+
+
+class TaskNodeSpec(BaseModel):
+    """Represents a discrete execution unit node within a workflow graph.
+
+    Attributes:
+        id: Unique identifier for the task within the manifest scope.
+        action: Executable routine or runner target specifier.
+        depends_on: List of upstream task IDs required prior to execution.
+        inputs: Declared input artifacts bound to this step.
+        outputs: Declared output artifacts produced by this step.
+        params: Arbitrary runtime parameters passed to the task executor.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    id: str = Field(..., min_length=1, description="Unique node ID")
+    action: str = Field(..., min_length=1, description="Target action identifier")
+    depends_on: List[str] = Field(
+        default_factory=list,
+        description="IDs of prerequisite parent nodes",
+    )
+    inputs: List[ArtifactRefSpec] = Field(
+        default_factory=list,
+        description="Input artifact specifications",
+    )
+    outputs: List[ArtifactRefSpec] = Field(
+        default_factory=list,
+        description="Output artifact specifications",
+    )
+    params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Static task execution configuration key-values",
+    )
+
+    @field_validator("id")
+    @classmethod
+    def validate_task_id(cls, v: str) -> str:
+        """Validates task node identifier pattern."""
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError(
+                f"Task ID '{v}' contains invalid characters. Must match pattern ^[a-zA-Z0-9_-]+$"
+            )
+        return v
+
+    @field_validator("depends_on")
+    @classmethod
+    def validate_no_self_dependency(cls, v: List[str], info: Any) -> List[str]:
+        """Prevents immediate self-referential dependency declarations."""
+        task_id = info.data.get("id")
+        if task_id and task_id in v:
+            raise ValueError(f"Task '{task_id}' cannot declare a direct dependency on itself.")
+        return list(dict.fromkeys(v))  # Deduplicate keeping insertion order
+
+
+class WorkflowManifestSpec(BaseModel):
+    """Root metadata container representing a complete declarative workflow.
+
+    Attributes:
+        version: Manifest version identifier (e.g., 'v1', 'v1.0.0').
+        namespace: Logical grouping boundary for workflow registration.
+        name: Canonical workflow identifier name.
+        description: Optional human-readable documentation string.
+        tasks: Comprehensive list of task execution specs comprising the workflow DAG.
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    version: str = Field(..., description="Manifest protocol version")
+    namespace: str = Field(..., min_length=1, description="Target deployment namespace")
+    name: str = Field(..., min_length=1, description="Workflow definition identifier")
+    description: Optional[str] = Field(
+        default=None,
+        description="Detailed workflow summary",
+    )
+    tasks: List[TaskNodeSpec] = Field(
+        ...,
+        min_items=1,
+        description="Ordered sequence of declared DAG task nodes",
+    )
+
+    @field_validator("version")
+    @classmethod
+    def validate_version_format(cls, v: str) -> str:
+        """Ensures semantic version string conforms to ^v[0-9]+ pattern."""
+        if not re.match(r"^v[0-9]+(\.[0-9]+)*$", v):
+            raise ValueError(f"Version string '{v}' must follow format 'v1' or 'v1.0.0'")
+        return v
+
+    @field_validator("tasks")
+    @classmethod
+    def validate_unique_task_ids(cls, tasks: List[TaskNodeSpec]) -> List[TaskNodeSpec]:
+        """Ensures all task nodes within the workflow manifest have unique IDs."""
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+
+        for task in tasks:
+            if task.id in seen:
+                duplicates.add(task.id)
+            seen.add(task.id)
+
+        if duplicates:
+            raise ValueError(
+                f"Duplicate task node IDs detected in manifest: {sorted(duplicates)}"
+            )
+
+        return tasks
+
+    def get_node_by_id(self, task_id: str) -> Optional[TaskNodeSpec]:
+        """Helper to lookup a task node by its string ID."""
+        for task in self.tasks:
+            if task.id == task_id:
+                return task
+        return None
+
+---------------
+
+User Input:As a google senior engineer, implement
+#### **Phase 3: Pipeline Stage Implementation (Steps 1 through 5)**
+
+4. **`src/meta_compiler/guards/syntax_guard.py` (Step 1)**
+* **Dependencies:** `config.py`, `schemas/meta_schema_v1.json`.
+
+
+* **Role:** Ingests raw dicts/YAML and performs initial `jsonschema` structural checks.
+
+Gemini Design: Code implementation
+src/meta_compiler/guards/syntax_guard.py
+"""Syntax guard module for meta_compiler.
+
+Ingests raw dictionary or YAML specifications and performs static structural validation
+against JSON Schema Draft 2020-12 rules before dynamic model instantiation.
+"""
+
+from functools import lru_cache
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+import jsonschema
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
+import yaml
+
+from meta_compiler.config import settings
+
+logger = logging.getLogger("meta_compiler.guards.syntax_guard")
+
+
+class SyntaxValidationError(Exception):
+    """Raised when a raw manifest fails structural validation against static meta-schemas."""
+
+    def __init__(self, message: str, schema_path: str, details: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.schema_path = schema_path
+        self.details = details or []
+
+
+@lru_cache(maxsize=4)
+def load_meta_schema(schema_path: str) -> dict[str, Any]:
+    """Loads and caches the static JSON validation schema from disk.
+
+    Args:
+        schema_path: Absolute or relative string filepath to the target JSON schema.
+
+    Returns:
+        dict[str, Any]: Parsed JSON schema dictionary.
+
+    Raises:
+        FileNotFoundError: If the target schema file does not exist on disk.
+        ValueError: If the schema file content is invalid JSON.
+    """
+    path = Path(schema_path)
+    logger.debug("Loading meta-schema from disk path: %s", path)
+
+    if not path.is_file():
+        raise FileNotFoundError(f"Meta-schema file not found at location: {path}")
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            schema_data: dict[str, Any] = json.load(f)
+            return schema_data
+    except json.JSONDecodeError as err:
+        logger.error("Failed to parse JSON meta-schema file: %s", err)
+        raise ValueError(f"Invalid JSON in meta-schema file at '{path}': {err}") from err
+
+
+def validate_manifest_syntax(
+    raw_manifest: dict[str, Any],
+    schema_path: Path | None = None,
+) -> dict[str, Any]:
+    """Executes jsonschema structural validation against the static Draft 2020-12 schema.
+
+    Args:
+        raw_manifest: Ingested raw manifest dictionary.
+        schema_path: Optional explicit Path override for meta-schema location. Defaults to settings.meta_schema_v1_path.
+
+    Returns:
+        dict[str, Any]: The validated raw manifest dictionary.
+
+    Raises:
+        SyntaxValidationError: If structural validation rules are violated.
+    """
+    target_schema_path = schema_path or settings.meta_schema_v1_path
+    schema = load_meta_schema(str(target_schema_path.resolve()))
+
+    validator_cls = jsonschema.Draft202012Validator
+    validator = validator_cls(schema)
+
+    errors = list(validator.iter_errors(raw_manifest))
+    if errors:
+        error_details: list[dict[str, Any]] = []
+        for err in errors:
+            formatted_path = ".".join(str(elem) for elem in err.absolute_path) or "root"
+            error_details.append({
+                "path": formatted_path,
+                "message": err.message,
+                "validator": err.validator,
+            })
+            logger.error("Syntax validation error at path '%s': %s", formatted_path, err.message)
+
+        first_error_msg = error_details[0]["message"]
+        first_error_path = error_details[0]["path"]
+        raise SyntaxValidationError(
+            message=f"Manifest syntax validation failed at '{first_error_path}': {first_error_msg}",
+            schema_path=str(target_schema_path),
+            details=error_details,
+        )
+
+    logger.info(
+        "Successfully validated syntax for manifest '%s/%s'",
+        raw_manifest.get("namespace", "unknown"),
+        raw_manifest.get("name", "unknown"),
+    )
+    return raw_manifest
+
+
+def parse_and_validate_yaml(
+    raw_yaml_str: str,
+    schema_path: Path | None = None,
+) -> dict[str, Any]:
+    """Parses raw YAML text and immediately validates its syntax.
+
+    Args:
+        raw_yaml_str: Raw string containing YAML manifest payload.
+        schema_path: Optional Path override for meta-schema location.
+
+    Returns:
+        dict[str, Any]: Parsed and syntax-validated manifest dictionary.
+
+    Raises:
+        SyntaxValidationError: If YAML parsing fails or structural validation fails.
+    """
+    try:
+        parsed_dict = yaml.safe_load(raw_yaml_str)
+    except yaml.YAMLError as err:
+        logger.error("Failed to parse raw YAML manifest string: %s", err)
+        raise SyntaxValidationError(
+            message=f"YAML syntax parsing failure: {err}",
+            schema_path=str(schema_path or settings.meta_schema_v1_path),
+            details=[{"path": "root", "message": str(err), "validator": "yaml_parser"}],
+        ) from err
+
+    if not isinstance(parsed_dict, dict):
+        raise SyntaxValidationError(
+            message=f"Expected top-level YAML mapping/dict, received {type(parsed_dict).__name__}",
+            schema_path=str(schema_path or settings.meta_schema_v1_path),
+            details=[{"path": "root", "message": "Root must be an object", "validator": "type_check"}],
+        )
+
+    return validate_manifest_syntax(parsed_dict, schema_path=schema_path)
+
+--------------------------------
+
+User Input: As a senior engineer at google, implement the following requirement
+
+6. **`src/meta_compiler/validators/topology_validator.py` (Step 3)**
+* **Dependencies:** `compilers/models.py`.
+
+
+* **Role:** Ingests `WorkflowManifestSpec` to build `NetworkX` `DiGraph` objects, verify acyclic guarantees, and compute topological stage groupings.
+
+7. **`src/meta_compiler/contracts/contract_checker.py` (Step 4)**
+* **Dependencies:** `compilers/models.py`, outputs from `topology_validator.py`.
+
+
+* **Role:** Constructs in-memory Apache Hamilton execution drivers using the topological execution order to verify payload data-type compatibility across step boundaries.
+
+Gemini Design: Code implementation
+
+"""Contract checker module for meta_compiler.
+
+Uses Apache Hamilton in-memory DAG representations and `h_schema` validation decorators
+to dry-run and verify type compatibility across task input/output boundaries prior to database serialization.
+"""
+
+import importlib.util
+import logging
+import sys
+from types import ModuleType
+from typing import Any
+
+from hamilton import driver as h_driver
+from hamilton.plugins import h_schema
+
+from meta_compiler.compilers.models import TaskNodeSpec, WorkflowManifestSpec
+
+logger = logging.getLogger("meta_compiler.contracts.contract_checker")
+
+
+class ContractValidationError(Exception):
+    """Raised when edge data contracts or type boundaries between nodes are violated."""
+
+    def __init__(self, message: str, details: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or []
+
+
+def _resolve_python_type(type_str: str) -> type:
+    """Maps primitive manifest type strings to concrete Python types."""
+    mapping: dict[str, type] = {
+        "string": str,
+        "str": str,
+        "integer": int,
+        "int": int,
+        "float": float,
+        "number": float,
+        "boolean": bool,
+        "bool": bool,
+        "dict": dict,
+        "object": dict,
+        "list": list,
+        "array": list,
+        "any": object,
+    }
+    return mapping.get(type_str.lower(), object)
+
+
+def _generate_mock_output(task_id: str, out_type: type) -> Any:
+    """Generates a mock payload conforming to expected Python output types for dry-runs."""
+    if out_type is str:
+        return f"mock_output_{task_id}"
+    if out_type is int:
+        return 1
+    if out_type is float:
+        return 1.0
+    if out_type is bool:
+        return True
+    if out_type is list:
+        return []
+    if out_type is dict:
+        return {"task_id": task_id, "status": "mock_executed"}
+    return {"task_id": task_id}
+
+
+def _generate_hamilton_module(manifest: WorkflowManifestSpec) -> ModuleType:
+    """Dynamically generates a synthetic Python module containing Hamilton function definitions.
+
+    Each task node in the manifest is synthesized as a Hamilton function decorated with `@h_schema.check_output`
+    to validate runtime payload compliance against declared boundary types.
+
+    Args:
+        manifest: Compiled WorkflowManifestSpec instance.
+
+    Returns:
+        ModuleType: Dynamically constructed in-memory module containing Hamilton functions.
+    """
+    module_name = f"dynamic_hamilton_manifest_{manifest.namespace}_{manifest.name}"
+    dynamic_module = ModuleType(module_name)
+
+    for task in manifest.tasks:
+        func_name = task.id
+
+        # Determine primary output return type
+        primary_output_type = object
+        if task.outputs:
+            primary_output_type = _resolve_python_type(task.outputs[0].type)
+
+        def create_task_func(t_spec: TaskNodeSpec, out_type: type):
+            # Apply Hamilton schema check decorator to enforce contract during dry-run
+            @h_schema.check_output(data_type=out_type, importance="FAIL")
+            def task_node(**kwargs: Any) -> Any:
+                return _generate_mock_output(t_spec.id, out_type)
+
+            # Assign dynamic parameters & signature annotations for Hamilton graph reflection
+            annotations = {dep_id: object for dep_id in t_spec.depends_on}
+            annotations["return"] = out_type
+            task_node.__annotations__ = annotations
+            task_node.__name__ = t_spec.id
+            task_node.__doc__ = f"Synthetic Hamilton node for task {t_spec.id} ({t_spec.action})"
+            return task_node
+
+        task_func = create_task_func(task, primary_output_type)
+        setattr(dynamic_module, func_name, task_func)
+
+    sys.modules[module_name] = dynamic_module
+    return dynamic_module
+
+
+def build_hamilton_driver(manifest: WorkflowManifestSpec) -> h_driver.Driver:
+    """Compiles an in-memory Hamilton execution driver for the manifest.
+
+    Args:
+        manifest: Compiled WorkflowManifestSpec model instance.
+
+    Returns:
+        h_driver.Driver: Initialized Hamilton Driver containing mapped graph nodes.
+
+    Raises:
+        ContractValidationError: If module synthesis or Hamilton initialization fails.
+    """
+    logger.debug("Building dynamic Hamilton driver for workflow '%s'", manifest.name)
+    try:
+        dynamic_module = _generate_hamilton_module(manifest)
+        driver = h_driver.Builder().with_modules(dynamic_module).build()
+        return driver
+    except Exception as err:
+        logger.error("Failed to build Hamilton execution driver: %s", err)
+        raise ContractValidationError(
+            message=f"Failed to compile Hamilton graph driver: {err}",
+            details=[{"manifest": manifest.name, "error": str(err)}],
+        ) from err
+
+
+def verify_node_contracts(
+    driver: h_driver.Driver,
+    manifest: WorkflowManifestSpec,
+    execution_order: list[list[str]],
+) -> bool:
+    """Executes a dry-run pass across all nodes using the topological ordering to verify edge contracts.
+
+    Args:
+        driver: Initialized Hamilton Driver.
+        manifest: Compiled WorkflowManifestSpec model.
+        execution_order: Topologically sorted list of parallel execution generations.
+
+    Returns:
+        bool: True if contract verification succeeds across all graph boundaries.
+
+    Raises:
+        ContractValidationError: If dry-run execution or schema boundary contracts fail.
+    """
+    all_target_nodes = [task.id for task in manifest.tasks]
+    logger.debug("Verifying node payload contracts for targets: %s", all_target_nodes)
+
+    try:
+        results = driver.execute(final_vars=all_target_nodes)
+
+        for target in all_target_nodes:
+            if target not in results:
+                raise ContractValidationError(
+                    message=f"Contract verification failed: target node '{target}' produced no output payload",
+                    details=[{"missing_target": target}],
+                )
+
+        logger.info(
+            "Successfully validated data contracts with h_schema across %d node boundaries for manifest '%s'",
+            len(all_target_nodes),
+            manifest.name,
+        )
+        return True
+
+    except ContractValidationError:
+        raise
+    except Exception as err:
+        logger.error("Contract validation dry-run failed: %s", err)
+        raise ContractValidationError(
+            message=f"Payload contract dry-run failure: {err}",
+            details=[{"error": str(err)}],
+        ) from err
+
+src/meta_compiler/validators/topology_validator.py
+"""Topological validator module for meta_compiler.
+
+Builds NetworkX directed graph representations of compiled workflow manifests to
+enforce acyclic guarantees, detect unresolved node dependencies, and compute
+parallel topological execution stages.
+"""
+
+import logging
+from typing import Any
+
+networkx as nx
+
+from meta_compiler.compilers.models import WorkflowManifestSpec
+
+logger = logging.getLogger("meta_compiler.validators.topology_validator")
+
+
+class TopologyValidationError(Exception):
+    """Base exception raised when graph topology verification fails."""
+
+    def __init__(self, message: str, details: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or []
+
+
+class CyclicGraphError(TopologyValidationError):
+    """Raised specifically when execution loops or circular dependencies are detected."""
+
+    def __init__(self, message: str, cycle_nodes: list[str]) -> None:
+        super().__init__(
+            message=message,
+            details=[{"rule": "acyclic_check", "cycle_nodes": cycle_nodes}],
+        )
+        self.cycle_nodes = cycle_nodes
+
+
+def build_networkx_graph(manifest: WorkflowManifestSpec) -> nx.DiGraph:
+    """Constructs a NetworkX DiGraph from a compiled workflow manifest specification.
+
+    Nodes represent task units, and directed edges represent execution dependencies
+    pointing from dependency prerequisites to downstream execution tasks (upstream -> downstream).
+
+    Args:
+        manifest: Compiled WorkflowManifestSpec model instance.
+
+    Returns:
+        nx.DiGraph: Directed graph populated with task node metadata and edges.
+
+    Raises:
+        TopologyValidationError: If a task refers to a nonexistent dependency node ID.
+    """
+    graph = nx.DiGraph()
+    declared_task_ids = {task.id for task in manifest.tasks}
+
+    logger.debug("Building NetworkX graph for manifest '%s/%s'", manifest.namespace, manifest.name)
+
+    # First pass: Add all declared nodes with metadata attributes
+    for task in manifest.tasks:
+        graph.add_node(
+            task.id,
+            action=task.action,
+            inputs=[inp.model_dump() for inp in task.inputs],
+            outputs=[out.model_dump() for out in task.outputs],
+            params=task.params,
+        )
+
+    # Second pass: Validate references and build directed edges (parent -> child)
+    for task in manifest.tasks:
+        for parent_id in task.depends_on:
+            if parent_id not in declared_task_ids:
+                logger.error(
+                    "Task '%s' references nonexistent upstream dependency '%s'",
+                    task.id,
+                    parent_id,
+                )
+                raise TopologyValidationError(
+                    message=f"Task '{task.id}' depends on unresolvable node ID '{parent_id}'",
+                    details=[{"task_id": task.id, "missing_dependency": parent_id}],
+                )
+            graph.add_edge(parent_id, task.id)
+
+    logger.debug(
+        "Successfully constructed graph with %d nodes and %d edges",
+        graph.number_of_nodes(),
+        graph.number_of_edges(),
+    )
+    return graph
+
+
+def assert_acyclic_topology(graph: nx.DiGraph) -> list[str]:
+    """Evaluates DAG integrity and raises CyclicGraphError if execution loops exist.
+
+    Args:
+        graph: Populated NetworkX DiGraph instance.
+
+    Returns:
+        list[str]: Empty list if graph is acyclic.
+
+    Raises:
+        CyclicGraphError: If direct or indirect cycles are found in the topology.
+    """
+    logger.debug("Asserting acyclic properties on execution graph")
+
+    if not nx.is_directed_acyclic_graph(graph):
+        try:
+            cycle = nx.find_cycle(graph, orientation="original")
+            cycle_nodes = [edge[0] for edge in cycle] + [cycle[0][0]]
+        except nx.NetworkXNoCycle:
+            cycle_nodes = list(graph.nodes)
+
+        cycle_str = " -> ".join(cycle_nodes)
+        logger.error("Cyclic dependency detected in workflow graph: %s", cycle_str)
+        raise CyclicGraphError(
+            message=f"Cyclic dependency loop detected: {cycle_str}",
+            cycle_nodes=cycle_nodes,
+        )
+
+    return []
+
+
+def compute_execution_order(graph: nx.DiGraph) -> list[list[str]]:
+    """Calculates topologically sorted parallel execution generations/stages.
+
+    Tasks within the same inner list can be executed concurrently in parallel,
+    while outer list indices represent strict sequential execution barriers.
+
+    Args:
+        graph: Validated, acyclic NetworkX DiGraph instance.
+
+    Returns:
+        list[list[str]]: Generational execution plan where each inner list contains task IDs.
+
+    Raises:
+        CyclicGraphError: If the graph contains cycles preventing topological sorting.
+    """
+    assert_acyclic_topology(graph)
+
+    generations = [list(generation) for generation in nx.topological_generations(graph)]
+
+    logger.info(
+        "Computed %d parallel execution stage(s) across %d node(s)",
+        len(generations),
+        graph.number_of_nodes(),
+    )
+    return generations
+
+
+def validate_topology(manifest: WorkflowManifestSpec) -> tuple[nx.DiGraph, list[list[str]]]:
+    """Convenience helper executing full Step 3 topological verification.
+
+    Args:
+        manifest: Compiled WorkflowManifestSpec model instance.
+
+    Returns:
+        tuple[nx.DiGraph, list[list[str]]]: Populated graph and its generational execution order.
+    """
+    graph = build_networkx_graph(manifest)
+    execution_order = compute_execution_order(graph)
+    return graph, execution_order
+
+----------------------------------------------
+
+User Input: As a senior developer at Google, implement the following functionality.
+8. **`src/meta_compiler/persistence/db_serializer.py` (Step 5)**
+* **Dependencies:** `compilers/models.py`, outputs from `topology_validator.py`.
+
+* **Role:** Converts compiled specs and topological generation stages into DB JSONB payloads and executes async SQLAlchemy inserts into `meta_workflow_definitions`.
+
+Phase 4: Facade Assembly**
+
+9. **`src/meta_compiler/orchestrator.py`**
+* **Dependencies:** Steps 1 through 5 (`syntax_guard.py`, `model_compiler.py`, `topology_validator.py`, `contract_checker.py`, `db_serializer.py`).
+* **Role:** Provides `compile_and_register_manifest()`, chaining the complete pipeline sequentially from raw YAML parsing through async persistence.
+
+Gemini Design:
+
+src/meta_compiler/orchestrator.py
+"""Pipeline orchestrator module for meta_compiler.
+
+Exposes a unified facade that coordinates the five compilation pipeline stages sequentially
+from raw YAML parsing to async database serialization.
+"""
+
+import logging
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meta_compiler.compilers.model_compiler import compile_runtime_models
+from meta_compiler.contracts.contract_checker import build_hamilton_driver, verify_node_contracts
+from meta_compiler.guards.syntax_guard import parse_and_validate_yaml
+from meta_compiler.persistence.db_serializer import persist_workflow_definition, to_db_payload
+from meta_compiler.validators.topology_validator import validate_topology
+
+logger = logging.getLogger("meta_compiler.orchestrator")
+
+
+class PipelineCompilationError(Exception):
+    """Raised when any stage of the compilation pipeline encounters a fatal failure."""
+
+    def __init__(self, stage: str, message: str, details: Any = None) -> None:
+        super().__init__(f"[{stage}] {message}")
+        self.stage = stage
+        self.details = details or []
+
+
+async def compile_and_register_manifest(
+    raw_yaml_str: str,
+    session: AsyncSession,
+) -> UUID:
+    """Executes the full 5-stage compilation and registration pipeline for a raw manifest.
+
+    Pipeline Stages:
+        1. Syntax Guard: Parse YAML and validate syntax against static JSON schema rules.
+        2. Dynamic Model Compiler: Instantiate Pydantic models (WorkflowManifestSpec).
+        3. Topological Validator: Construct NetworkX graph, assert acyclicity, compute stages.
+        4. Contract Checker: Synthesize in-memory Hamilton driver with h_schema dry-run checks.
+        5. DB Serializer: Generate JSONB payload and execute async PostgreSQL persistence.
+
+    Args:
+        raw_yaml_str: String payload containing raw YAML workflow definition.
+        session: Active SQLAlchemy AsyncSession connection.
+
+    Returns:
+        UUID: Unique database identifier of the registered workflow definition.
+
+    Raises:
+        PipelineCompilationError: Wrapping underlying exceptions if any stage fails.
+    """
+    logger.info("Beginning meta_compiler pipeline execution")
+
+    # --- Step 1: Syntax Guard ---
+    logger.debug("Pipeline Stage 1: Running Syntax Guard validation")
+    try:
+        raw_manifest_dict = parse_and_validate_yaml(raw_yaml_str)
+    except Exception as err:
+        logger.error("Stage 1 (Syntax Guard) failed: %s", err)
+        raise PipelineCompilationError("Syntax Guard", str(err)) from err
+
+    # --- Step 2: Dynamic Model Compiler ---
+    logger.debug("Pipeline Stage 2: Compiling runtime Pydantic models")
+    try:
+        manifest_spec = compile_runtime_models(raw_manifest_dict)
+    except Exception as err:
+        logger.error("Stage 2 (Model Compiler) failed: %s", err)
+        raise PipelineCompilationError("Model Compiler", str(err)) from err
+
+    # --- Step 3: Topological Validator ---
+    logger.debug("Pipeline Stage 3: Verifying DAG topology and computing execution order")
+    try:
+        graph, execution_order = validate_topology(manifest_spec)
+    except Exception as err:
+        logger.error("Stage 3 (Topology Validator) failed: %s", err)
+        raise PipelineCompilationError("Topology Validator", str(err)) from err
+
+    # --- Step 4: Payload Contract Checker ---
+    logger.debug("Pipeline Stage 4: Dry-running edge contracts with Apache Hamilton")
+    try:
+        driver = build_hamilton_driver(manifest_spec)
+        verify_node_contracts(driver, manifest_spec, execution_order)
+    except Exception as err:
+        logger.error("Stage 4 (Contract Checker) failed: %s", err)
+        raise PipelineCompilationError("Contract Checker", str(err)) from err
+
+    # --- Step 5: Database Persistence ---
+    logger.debug("Pipeline Stage 5: Serializing and persisting definition to DB")
+    try:
+        payload = to_db_payload(manifest_spec, execution_order)
+        definition_id = await persist_workflow_definition(payload, session)
+    except Exception as err:
+        logger.error("Stage 5 (Database Serializer) failed: %s", err)
+        raise PipelineCompilationError("Database Serializer", str(err)) from err
+
+    logger.info(
+        "Successfully compiled and registered workflow '%s/%s' with ID: %s",
+        manifest_spec.namespace,
+        manifest_spec.name,
+        definition_id,
+    )
+    return definition_id
+
+
+    src/meta_compiler/persistence/db_serializer.py
+    """Database serializer module for meta_compiler.
+
+Transforms compiled workflow specifications and topological execution plans into structured
+database payloads, executing transactional async inserts into PostgreSQL target state tables.
+"""
+
+import logging
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import Column, String, Text, Table, MetaData
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import func
+
+from meta_compiler.compilers.models import WorkflowManifestSpec
+
+logger = logging.getLogger("meta_compiler.persistence.db_serializer")
+
+# Declarative table definition matching PostgreSQL target schema
+metadata = MetaData()
+meta_workflow_definitions = Table(
+    "meta_workflow_definitions",
+    metadata,
+    Column("id", PG_UUID(as_uuid=True), primary_key=True, default=uuid4),
+    Column("namespace", String(64), nullable=False, index=True),
+    Column("name", String(64), nullable=False, index=True),
+    Column("version", String(32), nullable=False),
+    Column("description", Text, nullable=True),
+    Column("compiled_manifest", JSONB, nullable=False),
+    Column("execution_plan", JSONB, nullable=False),
+    Column("created_at", String(64), server_default=func.now(), nullable=False),
+)
+
+
+class SerializationError(Exception):
+    """Raised when JSONB payload mapping or database persistence fails."""
+
+    def __init__(self, message: str, details: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or []
+
+
+def to_db_payload(
+    manifest: WorkflowManifestSpec,
+    topo_order: list[list[str]],
+) -> dict[str, Any]:
+    """Transforms a verified workflow manifest and topological order into a DB JSONB payload map.
+
+    Args:
+        manifest: Compiled WorkflowManifestSpec instance.
+        topo_order: Topologically sorted generational execution plan.
+
+    Returns:
+        dict[str, Any]: Structured dictionary ready for database insertion.
+    """
+    logger.debug(
+        "Serializing workflow manifest '%s/%s' into DB JSONB payload",
+        manifest.namespace,
+        manifest.name,
+    )
+    return {
+        "id": uuid4(),
+        "namespace": manifest.namespace,
+        "name": manifest.name,
+        "version": manifest.version,
+        "description": manifest.description,
+        "compiled_manifest": manifest.model_dump(mode="json"),
+        "execution_plan": {
+            "stages": [
+                {"stage_index": idx, "parallel_tasks": stage}
+                for idx, stage in enumerate(topo_order)
+            ],
+            "total_stages": len(topo_order),
+            "total_tasks": len(manifest.tasks),
+        },
+    }
+
+
+async def persist_workflow_definition(
+    payload: dict[str, Any],
+    session: AsyncSession,
+) -> UUID:
+    """Performs an async transactional insert into the `meta_workflow_definitions` table.
+
+    Args:
+        payload: Formatted database payload dictionary containing compiled manifest data.
+        session: Active AsyncSession context for database operation.
+
+    Returns:
+        UUID: Unique primary identifier for the persisted workflow definition.
+
+    Raises:
+        SerializationError: If database insertion fails or transaction aborts.
+    """
+    definition_id: UUID = payload["id"]
+    logger.info(
+        "Persisting workflow definition '%s/%s' (ID: %s)",
+        payload["namespace"],
+        payload["name"],
+        definition_id,
+    )
+
+    try:
+        stmt = meta_workflow_definitions.insert().values(
+            id=definition_id,
+            namespace=payload["namespace"],
+            name=payload["name"],
+            version=payload["version"],
+            description=payload["description"],
+            compiled_manifest=payload["compiled_manifest"],
+            execution_plan=payload["execution_plan"],
+        )
+        await session.execute(stmt)
+        await session.commit()
+        logger.info("Successfully persisted workflow definition ID: %s", definition_id)
+        return definition_id
+
+    except Exception as err:
+        await session.rollback()
+        logger.error("Database persistence failed for definition ID %s: %s", definition_id, err)
+        raise SerializationError(
+            message=f"Failed to persist workflow definition to database: {err}",
+            details=[{"definition_id": str(definition_id), "error": str(err)}],
+        ) from err
+
+
+-----
+
+User Input: As a senior principle engineer at Google, review the whole to identify any gaps.
+ create a driver program that can run as a command line script.
+
+ Gemini Design: Implemented the cli.
+ """Command-Line Interface (CLI) driver for the meta_compiler pipeline.
+
+Provides terminal entry points to validate YAML manifests locally or compile
+and register manifests directly into a PostgreSQL database.
+"""
+
+import argparse
+import asyncio
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from meta_compiler.config import settings
+from meta_compiler.compilers.model_compiler import compile_runtime_models
+from meta_compiler.contracts.contract_checker import build_hamilton_driver, verify_node_contracts
+from meta_compiler.guards.syntax_guard import parse_and_validate_yaml
+from meta_compiler.orchestrator import PipelineCompilationError, compile_and_register_manifest
+from meta_compiler.validators.topology_validator import validate_topology
+
+# Configure application-wide logging format
+logging.basicConfig(
+    level=settings.log_level,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("meta_compiler.cli")
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    """Constructs the command-line argument parser with subcommands.
+
+    Returns:
+        argparse.ArgumentParser: Populated parser instance.
+    """
+    parser = argparse.ArgumentParser(
+        prog="meta-compiler",
+        description="Meta-Builder Workflow Compiler & Graph Validation CLI Engine",
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        title="Subcommands",
+        description="Supported operation modes",
+        required=True,
+    )
+
+    # Subcommand: validate (Dry-run local compilation without DB writes)
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Run local syntax, topology, and contract validation without database persistence.",
+    )
+    validate_parser.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        required=True,
+        help="Path to raw workflow manifest YAML file",
+    )
+
+    # Subcommand: register (Full 5-stage compilation + DB persistence)
+    register_parser = subparsers.add_parser(
+        "register",
+        help="Execute full compilation pipeline and register workflow in target database.",
+    )
+    register_parser.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        required=True,
+        help="Path to raw workflow manifest YAML file",
+    )
+    register_parser.add_argument(
+        "--db-url",
+        type=str,
+        default=settings.db_connection_url,
+        help="Target PostgreSQL async connection URL (defaults to META_COMPILER_DB_CONNECTION_URL)",
+    )
+
+    return parser
+
+
+def run_dry_run_validation(manifest_path: Path) -> bool:
+    """Executes stages 1 through 4 of the pipeline locally without requiring database access.
+
+    Args:
+        manifest_path: Filepath pointing to the input YAML manifest.
+
+    Returns:
+        bool: True if validation succeeds.
+    """
+    logger.info("Executing dry-run validation for file: %s", manifest_path)
+    if not manifest_path.is_file():
+        logger.error("Specified manifest file does not exist: %s", manifest_path)
+        return False
+
+    try:
+        raw_yaml_str = manifest_path.read_text(encoding="utf-8")
+
+        # Stage 1: Syntax Guard
+        logger.info("[1/4] Running Syntax Guard...")
+        raw_dict = parse_and_validate_yaml(raw_yaml_str)
+
+        # Stage 2: Dynamic Model Compiler
+        logger.info("[2/4] Compiling runtime Pydantic models...")
+        manifest_spec = compile_runtime_models(raw_dict)
+
+        # Stage 3: Topological Validator
+        logger.info("[3/4] Validating DAG topology...")
+        _, execution_order = validate_topology(manifest_spec)
+
+        # Stage 4: Contract Checker
+        logger.info("[4/4] Verifying payload contracts with Hamilton...")
+        driver = build_hamilton_driver(manifest_spec)
+        verify_node_contracts(driver, manifest_spec, execution_order)
+
+        logger.info("VALIDATION SUCCESSFUL: Manifest '%s/%s' is valid.", manifest_spec.namespace, manifest_spec.name)
+        return True
+
+    except Exception as err:
+        logger.error("VALIDATION FAILED: %s", err)
+        return False
+
+
+async def run_registration(manifest_path: Path, db_url: str) -> Optional[str]:
+    """Executes the complete 5-stage orchestration pipeline using an async SQLAlchemy session.
+
+    Args:
+        manifest_path: Filepath pointing to the input YAML manifest.
+        db_url: Async SQLAlchemy PostgreSQL connection string.
+
+    Returns:
+        Optional[str]: Registered definition UUID as string if successful, else None.
+    """
+    logger.info("Executing registration pipeline for file: %s", manifest_path)
+    if not manifest_path.is_file():
+        logger.error("Specified manifest file does not exist: %s", manifest_path)
+        return None
+
+    raw_yaml_str = manifest_path.read_text(encoding="utf-8")
+    engine = create_async_engine(db_url, echo=False, pool_pre_ping=True)
+    async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    try:
+        async with async_session() as session:
+            definition_id = await compile_and_register_manifest(raw_yaml_str, session)
+            logger.info("REGISTRATION SUCCESSFUL: Persisted Definition UUID: %s", definition_id)
+            return str(definition_id)
+    except PipelineCompilationError as err:
+        logger.error("PIPELINE COMPILATION FAILURE at [%s]: %s", err.stage, err)
+        return None
+    except Exception as err:
+        logger.error("UNEXPECTED REGISTRATION ERROR: %s", err)
+        return None
+    finally:
+        await engine.dispose()
+
+
+def main() -> None:
+    """CLI application main entry point."""
+    parser = build_cli_parser()
+    args = parser.parse_args()
+
+    if args.command == "validate":
+        success = run_dry_run_validation(args.file)
+        sys.exit(0 if success else 1)
+
+    elif args.command == "register":
+        definition_id = asyncio.run(run_registration(args.file, args.db_url))
+        sys.exit(0 if definition_id else 1)
+
+
+if __name__ == "__main__":
+    main()
+
+
+ --------
+
+ User Input:  As a google engineer, make the needed changes to take care of the below issues.
+ A comprehensive architecture review reveals three key gaps across edge cases, logging, and performance:
+
+    Topological Order vs. Hamilton Execution Order Mismatch: verify_node_contracts accepts execution_order as an argument, but directly delegates target execution to driver.execute(final_vars=all_target_nodes). While Hamilton natively resolves internal DAG order, any dynamic parameter resolution or isolated generation-by-generation verification step requires explicit target filtering per topological tier.
+
+    PostgreSQL UTC Timestamp Column Mapping: In meta_workflow_definitions, created_at is defined as Column("created_at", String(64), server_default=func.now(), nullable=False). Using String(64) for SQL time representations bypasses standard DB temporal indexing. Using DateTime(timezone=True) or TIMESTAMP(timezone=True) provides proper query semantics and indexing.
+
+    Hamilton Dynamic Function Argument Binding: The Hamilton module synthesizer currently constructs signatures dynamically with annotations = {dep_id: object for dep_id in t_spec.depends_on}. If a task depends on upstream tasks that output named dictionary payloads, Hamilton matches input parameters to function names. Ensuring function parameter names match dependency IDs guarantees edge payload binding during Hamilton execution.
+
+  -----
+
+  User Input:  Phase 1 is completed.
+  This is a reference document now.
+
+  -----
+
+
+
+
+
+
+

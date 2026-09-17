@@ -1,0 +1,1782 @@
+I reviewed the two implementation documents as a single evolving architecture rather than evaluating the code snippets in isolation. There are several important issues: some are straightforward bugs, but the larger concern is that the current implementation is **ahead of the architectural contract in a few places and behind it in others**. In particular, the Phase 1 compiler and Phase 2 polymorphic platform are not yet cleanly separated.
+
+## Executive assessment
+
+The implementation is a reasonable prototype foundation, but I would **not merge it as production-ready** yet.
+
+The highest-priority concerns are:
+
+1. **Phase 1 and Phase 2 have a package/model boundary problem**: `meta_compiler` becomes `meta_polymorph`, but the design does not explicitly define the interface between them.
+2. **The manifest contract is insufficiently enforced**: several important semantic invariants are left for later stages, but no clear validation ownership is defined.
+3. **The dynamic Pydantic schema builder is not actually enforcing the declared artifact schemas**; it largely produces `Any` fields. This defeats one of the central goals of the compiler.
+4. **The Hamilton contract checker is architecturally underspecified**. A manifest action string is not itself a Hamilton function, so a callable/action registry is required.
+5. **Optimistic locking in Phase 2 is not actually implemented by the ORM models**. A `version` column alone does not provide optimistic concurrency.
+6. **The database model lacks important relational and integrity constraints**, especially around namespaces, FSM transitions, and entity-definition versioning.
+7. **Configuration needs a stronger contract**, especially around secrets, environment validation, schema paths, and startup behavior.
+8. **There is not enough testing at the boundaries between phases**. The current test plan is mostly component-level rather than invariant/end-to-end oriented.
+
+---
+
+# Phase 1 — `meta_compiler` foundation
+
+The Phase 1 architecture defines a five-stage compiler:
+
+**Syntax → Models → Topology → Contracts → Persistence**.
+
+That sequencing is directionally correct. The problems are in what each stage actually guarantees.
+
+## Phase 1.1 — Environment and static schema
+
+### Issue 1 — `config.py` fails too early during import
+
+The implementation creates a singleton and immediately executes:
+
+```python
+settings = CompilerSettings()
+settings.validate_paths()
+```
+
+This means simply importing `meta_compiler.config` fails if the schema file is absent. That is dangerous for:
+
+* migrations
+* CLI tooling
+* test discovery
+* package inspection
+* documentation generation
+* deployments where assets are mounted later
+
+The document explicitly makes the schema path mandatory for downstream use.
+
+### Fix
+
+Make configuration construction safe and validation explicit.
+
+Use:
+
+```text
+load settings
+    ↓
+validate configuration
+    ↓
+validate required assets
+    ↓
+start compiler
+```
+
+Prefer a method such as:
+
+```python
+settings.validate_runtime()
+```
+
+called by the application/bootstrap layer.
+
+---
+
+### Issue 2 — `db_connection_url` contains a production credential
+
+The default configuration contains:
+
+```text
+postgresql+asyncpg://postgres:postgres@localhost:5432/meta_builder
+```
+
+That is acceptable as a local development default, but the configuration design should explicitly distinguish:
+
+* local development
+* test
+* production
+
+and should never encourage real credentials to be encoded in source.
+
+### Fix
+
+Use:
+
+```text
+META_COMPILER_DB_CONNECTION_URL
+```
+
+and make production configuration mandatory.
+
+For example:
+
+```python
+db_connection_url: str | None = None
+```
+
+with validation:
+
+```python
+if environment == "production" and not db_connection_url:
+    raise ConfigurationError(...)
+```
+
+---
+
+### Issue 3 — configuration path handling is fragile
+
+The schema path is:
+
+```python
+Path(__file__).parent / "schemas" / "meta_schema_v1.json"
+```
+
+This works only while the source/package layout is preserved exactly.
+
+The design also describes environment/schema configuration as a first-class concern.
+
+### Fix
+
+Use a package-resource mechanism rather than assuming filesystem layout.
+
+Conceptually:
+
+```text
+package resource → schema asset
+```
+
+and allow an explicit override for deployments.
+
+This becomes especially important when building wheels.
+
+---
+
+## Phase 1.1 — `meta_schema_v1.json`
+
+This is one of the biggest architectural gaps.
+
+### Issue 4 — the schema validates syntax, not semantic correctness
+
+The current schema ensures things such as:
+
+* required `version`
+* required `namespace`
+* required `name`
+* required `tasks`
+* valid task IDs
+* valid artifact structure
+
+but it does **not** validate critical workflow invariants.
+
+For example, nothing prevents:
+
+```yaml
+tasks:
+  - id: A
+    action: foo
+    depends_on:
+      - DOES_NOT_EXIST
+```
+
+Nothing prevents:
+
+```yaml
+tasks:
+  - id: A
+    action: foo
+    outputs:
+      - name: result
+        type: string
+
+  - id: B
+    action: bar
+    inputs:
+      - name: result
+        type: integer
+```
+
+And nothing ensures that an input actually corresponds to an upstream output.
+
+The design expects later topology and contract stages to handle some of this, but ownership is not explicitly separated.
+
+### Fix
+
+Explicitly classify validations into three layers:
+
+| Validation                    | Owner                       |
+| ----------------------------- | --------------------------- |
+| YAML/JSON structural validity | Syntax Guard                |
+| Manifest semantic invariants  | Manifest Semantic Validator |
+| Graph topology                | Topology Validator          |
+| Data contract compatibility   | Contract Checker            |
+
+I recommend introducing a dedicated **semantic validation stage** between model compilation and graph construction.
+
+---
+
+### Issue 5 — `ArtifactRef` is too weak for the intended system
+
+Current artifact structure is effectively:
+
+```text
+name
+type
+schema_def
+```
+
+That is not enough to reliably model a boundary contract.
+
+The design says artifact references are used for `input_ref`/`output_ref` validation, but the actual schema shown does not model source/output relationships explicitly.
+
+### Fix
+
+Define artifact identity and provenance explicitly.
+
+For example:
+
+```text
+artifact:
+    name
+    type
+    schema
+    source:
+        task_id
+        artifact_name
+```
+
+or define the mapping at the edge level.
+
+This becomes critical once Phase 2 introduces polymorphic graph transformations.
+
+---
+
+# Phase 1.2 — Pydantic models
+
+## Issue 6 — the JSON Schema and Pydantic model have slightly different contracts
+
+The JSON schema permits an artifact name to be any string.
+
+The Pydantic model requires:
+
+```text
+^[a-zA-Z_][a-zA-Z0-9_]*$
+```
+
+This is stricter than the static schema.
+
+Likewise, the JSON schema allows arbitrary `type` strings, while Pydantic only requires non-empty strings.
+
+That creates two different notions of validity.
+
+### Fix
+
+The static schema and Pydantic model must have one intentional contract.
+
+Either:
+
+```text
+Schema = broad structural validation
+Pydantic = stricter semantic validation
+```
+
+and document this clearly, or make the patterns equivalent.
+
+I strongly recommend the first.
+
+---
+
+## Issue 7 — `depends_on` only checks self-reference
+
+The model checks:
+
+```text
+A → A
+```
+
+but not:
+
+```text
+A → B
+```
+
+where B does not exist.
+
+The topology validator must catch that later, but this should produce a cleaner semantic error before NetworkX is invoked.
+
+### Fix
+
+After all task IDs are known:
+
+```python
+task_ids = {...}
+
+for task in tasks:
+    unknown = set(task.depends_on) - task_ids
+```
+
+Return an explicit error:
+
+```text
+Task 'B' depends on unknown task 'X'
+```
+
+This belongs to manifest semantic validation.
+
+---
+
+## Issue 8 — mutable collection types inside frozen models need careful handling
+
+The models use:
+
+```python
+frozen=True
+```
+
+but contain lists and dictionaries.
+
+The model itself cannot be reassigned, but nested mutable structures may still be mutable depending on how they are accessed.
+
+### Fix
+
+For true immutable compiler IR, use immutable internal representations where appropriate:
+
+```text
+tuple[ArtifactRefSpec, ...]
+tuple[str, ...]
+Mapping[str, Any]
+```
+
+or make a clear distinction:
+
+```text
+RawManifest
+CompiledManifest
+```
+
+with the compiled IR immutable.
+
+---
+
+# Phase 1.3 — dynamic model compiler
+
+This is one of the most serious problems.
+
+The implementation says it creates schemas from `schema_def`, but the code effectively does:
+
+```python
+fields[field_name] = (Any, ...)
+```
+
+So:
+
+```json
+{
+  "price": {
+    "type": "number"
+  }
+}
+```
+
+turns into essentially:
+
+```python
+price: Any
+```
+
+### Issue 9 — dynamic schema compilation is not really schema compilation
+
+The implementation therefore does not enforce:
+
+* JSON Schema types
+* required fields
+* nested objects
+* arrays
+* constraints
+* enums
+* minimum/maximum
+* pattern
+* nullable semantics
+
+The document claims the compiler enforces typed boundaries.
+
+### Fix
+
+There should be a real boundary adapter:
+
+```text
+Artifact JSON Schema
+        ↓
+JSON Schema validator
+        +
+optional Pydantic representation
+```
+
+Do not attempt to convert arbitrary JSON Schema into `Any` Pydantic fields.
+
+Use JSON Schema for JSON-schema semantics, and Pydantic where a typed Python object is actually beneficial.
+
+---
+
+### Issue 10 — fallback artifact wrapper is overly permissive
+
+The fallback uses:
+
+```python
+payload: Any
+```
+
+with:
+
+```text
+extra="allow"
+```
+
+That provides essentially no contract enforcement.
+
+### Fix
+
+Introduce explicit primitive mappings:
+
+```text
+string → str
+integer → int
+number → float
+boolean → bool
+object → dict
+array → list
+```
+
+For unsupported types, fail compilation rather than silently becoming `Any`.
+
+---
+
+### Issue 11 — dynamic class naming is unsafe
+
+The class name is generated from:
+
+```python
+ref_spec.name.title().replace("_", "")
+```
+
+Different names can collapse to the same class name.
+
+Example:
+
+```text
+foo_bar
+foobar
+```
+
+can produce equivalent class names.
+
+### Fix
+
+Include a deterministic hash:
+
+```text
+DynamicArtifact_<normalized_name>_<short_schema_hash>
+```
+
+This also makes debugging easier.
+
+---
+
+# Phase 1.4 — topology validator
+
+The dependency sequence is reasonable: model compilation → graph → topological generations.
+
+### Issue 12 — unknown dependency validation must precede graph execution
+
+`NetworkX` can accept arbitrary nodes depending on how edges are inserted.
+
+A manifest containing:
+
+```text
+A depends_on X
+```
+
+must produce a domain error, not simply a graph containing X.
+
+### Fix
+
+Before constructing the graph:
+
+```text
+declared task IDs
+        ↓
+validate every dependency exists
+        ↓
+build graph
+        ↓
+cycle detection
+        ↓
+execution generations
+```
+
+---
+
+### Issue 13 — topology semantics need explicit direction
+
+The design says dependencies produce directed edges, but the contract needs one canonical meaning:
+
+```text
+upstream → downstream
+```
+
+not the inverse.
+
+This matters later for:
+
+* topological generations
+* merge operations
+* Hamilton graph creation
+* execution planning
+
+### Fix
+
+Document and assert:
+
+```python
+graph.add_edge(dependency_id, task.id)
+```
+
+Then add tests for a three-node chain.
+
+---
+
+### Issue 14 — no distinction between topology validation and execution planning
+
+`compute_execution_order()` currently produces execution generations.
+
+That is okay for a compiler, but it should not be treated as the final runtime scheduler.
+
+### Fix
+
+Return a compiler artifact such as:
+
+```text
+ExecutionPlan
+    graph_version
+    stages
+    critical_path
+    roots
+    leaves
+```
+
+The runtime executor can consume that later.
+
+This gives Phase 2 something stable to transform.
+
+---
+
+# Phase 1.5 — Hamilton contract checker
+
+This is the other major architectural concern.
+
+The design claims:
+
+> build an in-memory Hamilton execution graph from the manifest
+
+and perform type checks.
+
+But a manifest contains:
+
+```text
+action: "some_action"
+```
+
+Hamilton normally needs callable node definitions/signatures.
+
+### Issue 15 — the action registry is missing
+
+You cannot reliably construct the intended contract graph from action strings alone.
+
+### Fix
+
+Introduce an explicit:
+
+```text
+ActionRegistry
+```
+
+Conceptually:
+
+```text
+manifest action
+      ↓
+ActionRegistry
+      ↓
+callable + declared input/output contract
+      ↓
+Hamilton adapter
+```
+
+Example:
+
+```python
+registry.resolve("extract_customer")
+```
+
+returns:
+
+```text
+callable
+input schema
+output schema
+version
+```
+
+Now the compiler can verify the contract.
+
+---
+
+### Issue 16 — `@check_output` is not enough to establish manifest contract compatibility
+
+Output checks alone do not establish:
+
+```text
+producer output → consumer input
+```
+
+compatibility.
+
+You need explicit edge contracts.
+
+### Fix
+
+Contract validation should compare:
+
+```text
+Producer:
+    output artifact schema
+
+Consumer:
+    input artifact schema
+
+        ↓
+
+Compatibility rule
+```
+
+with clear rules around:
+
+* exact type
+* assignability
+* covariance
+* contravariance
+* nullable/non-nullable
+* structural object compatibility
+* version compatibility
+
+Do not hide this logic inside Hamilton.
+
+Hamilton should be an execution-graph integration layer, not the sole semantic type system.
+
+---
+
+# Phase 1.6 — persistence/orchestrator
+
+The orchestration sequence is correctly described as five stages.
+
+### Issue 17 — compiler is coupled directly to database persistence
+
+The orchestrator's public operation is:
+
+```text
+compile_and_register_manifest(...)
+```
+
+That combines:
+
+```text
+compile
++
+validate
++
+persist
+```
+
+This is problematic for:
+
+* dry runs
+* CI validation
+* editor tooling
+* preview
+* migration
+* testing
+
+### Fix
+
+Split:
+
+```text
+compile_manifest()
+        ↓
+CompiledWorkflowDefinition
+```
+
+and:
+
+```text
+register_workflow(compiled_definition, session)
+```
+
+Then provide the convenience facade:
+
+```text
+compile_and_register()
+```
+
+on top.
+
+This becomes especially important when Phase 2 introduces manifest inheritance and transformation.
+
+---
+
+### Issue 18 — transaction ownership is ambiguous
+
+The compiler receives an active SQLAlchemy session and then persistence occurs inside that session.
+
+But the architectural ownership of:
+
+```text
+commit
+rollback
+transaction boundary
+```
+
+is unclear.
+
+### Fix
+
+The persistence layer should normally perform database operations but **not own the outer application transaction**.
+
+Recommended model:
+
+```text
+API/service
+    └── transaction scope
+          ├── compiler
+          ├── validation
+          └── persistence
+```
+
+The caller owns commit/rollback.
+
+---
+
+# Phase 2 — `meta_polymorph`
+
+Phase 2 introduces four engines:
+
+1. Namespace Resolution
+2. Polymorphic Merge
+3. Entity FSM
+4. Manifest Hydration
+
+plus persistence.
+
+This is conceptually strong, but there is a significant architectural seam missing between Phase 1 and Phase 2.
+
+---
+
+## Phase 2 bootstrap/project structure
+
+### Issue 19 — naming transition is not formally defined
+
+Phase 1 is:
+
+```text
+meta_compiler
+```
+
+Phase 2 becomes:
+
+```text
+meta_polymorph
+```
+
+The Phase 2 document explicitly builds `src/meta_polymorph`.
+
+But there is no stated contract saying:
+
+```text
+meta_compiler → meta_polymorph
+```
+
+or whether:
+
+```text
+meta_compiler
+```
+
+remains a dependency.
+
+### Fix
+
+Define the architecture explicitly:
+
+```text
+meta_compiler
+    = generic workflow compiler / execution IR
+
+meta_polymorph
+    = manifest inheritance + realization + entity lifecycle platform
+```
+
+Then define the integration boundary:
+
+```text
+HydratedManifest
+      ↓
+meta_compiler
+      ↓
+CompiledExecutionGraph
+```
+
+This is the most important architectural clarification I would make before implementing more Phase 2 logic.
+
+---
+
+## Issue 20 — bootstrap script itself is not production-safe
+
+The bootstrap code shown has syntax/formatting problems around the function body and `__main__` block, and it writes a placeholder `pyproject.toml` containing only a comment.
+
+That means the generated project is not actually dependency-installable from the bootstrap artifact.
+
+### Fix
+
+The bootstrap should create a valid:
+
+```toml
+[project]
+name = "meta-polymorph"
+version = "0.1.0"
+dependencies = [...]
+```
+
+and should be **idempotent**.
+
+Also add:
+
+```text
+pyproject.toml
+uv.lock
+README.md
+src/...
+tests/...
+```
+
+as explicit repository artifacts.
+
+---
+
+# Phase 2 Task 1.2 — core primitives
+
+The enum design is good as a starting point:
+
+```text
+CUSTOM
+INDUSTRY
+GLOBAL
+
+DRAFT
+PENDING_APPROVAL
+ACTIVE
+DEPRECATED
+ARCHIVED
+
+ADD
+REPLACE
+DISABLE
+WRAP
+```
+
+These are clearly defined in the implementation.
+
+### Issue 21 — lifecycle transitions are not defined centrally
+
+`LifecycleState` exists, but the valid transition graph does not.
+
+For example:
+
+```text
+DRAFT → ACTIVE
+```
+
+may be invalid, while:
+
+```text
+DRAFT → PENDING_APPROVAL → ACTIVE
+```
+
+is valid.
+
+That logic should not be duplicated across FSM code and manifests.
+
+### Fix
+
+Define transition policy as data:
+
+```text
+LifecycleDefinition
+    states
+    events
+    transitions
+    guards
+```
+
+Then the FSM engine consumes it.
+
+---
+
+### Issue 22 — `ResolutionContext` is underspecified
+
+It contains:
+
+```text
+tenant_id
+industry_domain
+custom_namespace
+metadata
+```
+
+but no immutable request identity / resolution version / policy context.
+
+### Fix
+
+At minimum conceptually distinguish:
+
+```text
+tenant identity
+namespace identity
+resolution policy context
+request metadata
+```
+
+Do not make arbitrary `metadata` the place where essential semantics are hidden.
+
+---
+
+# Phase 2 Task 2.1 — database models
+
+This is where I would require the most rework before continuing.
+
+The submitted model design is described as supporting hierarchical namespaces, entity definition versioning, FSM rules, and optimistic locking.
+
+## Issue 23 — optimistic locking is not actually implemented
+
+`EntityInstanceModel` contains:
+
+```text
+version
+```
+
+but merely having:
+
+```text
+version INTEGER
+```
+
+does not provide optimistic locking.
+
+There is no ORM version counter configuration and no guaranteed conditional update in the model layer.
+
+### Fix
+
+The update must be equivalent to:
+
+```sql
+UPDATE meta_entity_instances
+SET
+    current_state = :new_state,
+    version = version + 1,
+    updated_at = :timestamp
+WHERE
+    id = :id
+    AND version = :expected_version
+```
+
+Then:
+
+```text
+rowcount == 0
+    → OptimisticLockError
+```
+
+The document's tests actually expect exactly this behavior.
+
+Therefore the production implementation must guarantee it rather than merely storing a version field.
+
+---
+
+## Issue 24 — missing FSM history/audit model
+
+The architecture discusses transition hooks and state transitions, but there is no explicit immutable transition/history table in the listed database structure.
+
+That makes questions like:
+
+```text
+Who changed this state?
+When?
+Why?
+Which event?
+Which version?
+What was the previous state?
+```
+
+hard to answer reliably.
+
+### Fix
+
+Add something like:
+
+```text
+meta_entity_state_history
+```
+
+with:
+
+```text
+entity_instance_id
+from_state
+to_state
+event
+actor
+reason
+version
+created_at
+metadata
+```
+
+Do not rely on mutable current-state storage for audit history.
+
+---
+
+## Issue 25 — FSM permissions are weakly modeled
+
+The implementation uses:
+
+```python
+permissions: dict
+```
+
+while describing permissions as a structured FSM concept.
+
+There is also a particularly important implementation defect in the shown model:
+
+```python
+permissions = mapped_column(JSONB, nullable=False, default=list)
+```
+
+The declared type is conceptually a dictionary, while the default factory/value is a list.
+
+### Fix
+
+Define a canonical permission structure.
+
+For example:
+
+```json
+{
+  "roles": ["admin", "editor"],
+  "scopes": ["entity.approve"]
+}
+```
+
+or model it relationally if authorization is a core query path.
+
+At minimum, the default must match the schema.
+
+---
+
+## Issue 26 — FSM state values are unconstrained at DB level
+
+The model stores:
+
+```text
+from_state: String
+to_state: String
+current_state: String
+```
+
+while the application has a `LifecycleState` enum.
+
+This allows the database to contain:
+
+```text
+current_state = "BANANA"
+```
+
+if application-level validation is bypassed.
+
+### Fix
+
+Use PostgreSQL enums or explicit `CHECK` constraints, depending on whether lifecycle states are globally fixed or manifest-defined.
+
+Because the architecture appears to support dynamic manifests, I would favor database-level structural validation plus application-level dynamic FSM validation rather than hardcoding all possible states into PostgreSQL.
+
+---
+
+## Issue 27 — entity-definition versioning is incomplete
+
+The model has:
+
+```text
+namespace_id
+entity_type
+version
+schema_payload
+manifest_hash
+```
+
+which is a reasonable starting point, but does not define:
+
+* active version
+* superseded version
+* effective-from
+* effective-to
+* draft/published state
+* immutable version policy
+
+### Fix
+
+Treat entity definitions as immutable versions.
+
+Conceptually:
+
+```text
+EntityDefinition
+    logical identity
+    version
+    schema
+    manifest hash
+    lifecycle
+```
+
+Never mutate the schema of a published version.
+
+---
+
+## Issue 28 — namespace hierarchy integrity relies too heavily on application code
+
+The namespace model has:
+
+```text
+parent_id → meta_namespaces.id
+```
+
+plus NetworkX in the resolution layer.
+
+That detects cycles at runtime, but the DB itself can still represent illegal hierarchy states unless creation/update paths always go through the graph validator.
+
+### Fix
+
+Use a service-level invariant:
+
+```text
+namespace mutation
+    ↓
+validate hierarchy
+    ↓
+transaction
+    ↓
+persist
+```
+
+For highly critical namespace trees, consider stronger database representation such as a materialized path or closure table.
+
+---
+
+## Issue 29 — ORM relationships are incomplete
+
+`NamespaceModel` has parent/children relationships, but other domain models have little/no relational navigation.
+
+That is not inherently wrong, but it suggests the ORM is being used as a table definition rather than a consistent domain persistence layer.
+
+### Fix
+
+Choose explicitly:
+
+```text
+ORM = persistence mapping only
+```
+
+or:
+
+```text
+ORM = domain persistence model
+```
+
+I would choose the former and keep domain services/repositories separate.
+
+---
+
+# Phase 2 Task 2.2 — database session
+
+The async session pattern is broadly reasonable:
+
+```text
+create session
+→ yield
+→ commit
+→ rollback on exception
+→ close
+```
+
+But there are architectural issues.
+
+## Issue 30 — session dependency is doing transaction ownership
+
+The shown implementation commits after the caller returns. This makes it impossible for callers to compose multiple repository operations with independent control over transaction boundaries.
+
+### Fix
+
+Expose:
+
+```python
+async_sessionmaker
+```
+
+and define a separate transaction context:
+
+```python
+async with session.begin():
+    ...
+```
+
+Then let API/service layers decide transaction boundaries.
+
+---
+
+## Issue 31 — engine configuration is hardcoded
+
+The engine contains:
+
+```text
+pool_size=10
+max_overflow=20
+```
+
+for every environment.
+
+### Fix
+
+Make these configuration properties:
+
+```text
+DB_POOL_SIZE
+DB_MAX_OVERFLOW
+DB_POOL_TIMEOUT
+DB_POOL_RECYCLE
+DB_ECHO
+```
+
+and tune them per environment.
+
+---
+
+## Issue 32 — no lifecycle shutdown/disposal contract
+
+The design creates a process-wide engine but doesn't establish application startup/shutdown behavior.
+
+### Fix
+
+Define:
+
+```text
+startup → initialize resources
+shutdown → await engine.dispose()
+```
+
+This matters for FastAPI workers, tests, and clean shutdown.
+
+---
+
+# Phase 2 Engine 1 — Namespace resolution
+
+The planned engine uses NetworkX + OPA + caching.
+
+### Issue 33 — OPA is currently over-positioned
+
+The design implies OPA is part of namespace path resolution.
+
+That can create unnecessary latency and operational complexity if every lookup requires a policy evaluation.
+
+### Fix
+
+Separate:
+
+```text
+namespace structure resolution
+```
+
+from:
+
+```text
+authorization/policy evaluation
+```
+
+Recommended:
+
+```text
+NamespaceResolver
+    → computes candidate namespace/path
+
+PolicyEvaluator
+    → decides whether context may use it
+```
+
+OPA should not be responsible for basic tree traversal.
+
+---
+
+### Issue 34 — cache invalidation is missing from the design
+
+A resolution-path cache is proposed.
+
+But namespace mutations invalidate previously calculated paths.
+
+### Fix
+
+Use either:
+
+```text
+namespace_version
+```
+
+in the cache key, or explicit invalidation:
+
+```text
+cache key =
+tenant + namespace + policy_version + namespace_revision
+```
+
+TTL alone is not sufficient for correctness.
+
+---
+
+# Phase 2 Engine 2 — Polymorphic merge
+
+The merger introduces:
+
+```text
+jsonmerge
+jsonpatch
+ADD
+REPLACE
+DISABLE
+WRAP
+```
+
+and then contracts.
+
+### Issue 35 — merge semantics are not formally specified
+
+The most dangerous thing in a polymorphic system is ambiguous merge behavior.
+
+For example:
+
+```text
+ADD task X
+REPLACE task X
+DISABLE task X
+WRAP task X
+```
+
+needs formally defined behavior for:
+
+* dependencies
+* inputs
+* outputs
+* parameters
+* IDs
+* downstream references
+
+### Fix
+
+Define an immutable **DAG Delta specification**.
+
+Each operation needs:
+
+```text
+target
+preconditions
+operation
+payload
+postconditions
+```
+
+Example:
+
+```text
+REPLACE node A
+precondition:
+    A exists
+
+postcondition:
+    exactly one node A exists
+    all downstream edges remain valid
+```
+
+---
+
+### Issue 36 — merge must be deterministic
+
+Given:
+
+```text
+global
+  ↓
+industry
+  ↓
+custom
+```
+
+the same inputs must always produce exactly the same final manifest.
+
+### Fix
+
+Define:
+
+```text
+canonical merge order
+conflict policy
+operation precedence
+deterministic serialization
+manifest hash
+```
+
+The hasher can then verify the result.
+
+---
+
+# Phase 2 Engine 3 — FSM
+
+The FSM test plan already indicates transition guards, hooks, and optimistic-lock conflict handling.
+
+### Issue 37 — side effects can break transaction semantics
+
+Pre/post hooks are planned as async callbacks.
+
+The key question is:
+
+```text
+Does post-hook execute before or after DB commit?
+```
+
+If after commit:
+
+```text
+DB succeeds
+hook fails
+```
+
+you have partial completion.
+
+If before commit:
+
+```text
+hook succeeds
+DB fails
+```
+
+the external side effect may already have happened.
+
+### Fix
+
+Define three categories:
+
+```text
+pre-commit transactional hooks
+post-commit event publication
+external asynchronous side effects
+```
+
+For reliable external events, use an **outbox pattern** rather than direct post-transition callbacks.
+
+---
+
+# Phase 2 Engine 4 — hydrator
+
+The Phase 2 design explicitly uses Ruamel YAML, JSON Schema, and deterministic hashing.
+
+## Issue 38 — "lossless parser" and `dict(parsed_data)` are conceptually inconsistent
+
+The implementation uses round-trip YAML parsing, which preserves YAML metadata in Ruamel objects, then converts the root to a standard dictionary.
+
+That risks losing some round-trip characteristics.
+
+### Fix
+
+Keep the Ruamel object model for authoring/editing:
+
+```text
+CommentedMap
+CommentedSeq
+```
+
+and have a separate normalization step:
+
+```text
+Round-trip AST
+    ↓
+Normalized JSON-compatible representation
+    ↓
+Schema validation
+    ↓
+Canonical hash
+```
+
+Do not pretend the normalized dictionary is still lossless.
+
+---
+
+## Issue 39 — hashing must define exactly what is hashed
+
+"Canonical JSON hash" is good conceptually, but the architecture needs a strict definition.
+
+For example, should these produce the same hash?
+
+```yaml
+a: 1
+b: 2
+```
+
+and:
+
+```yaml
+b: 2
+a: 1
+```
+
+Probably yes.
+
+Should comments affect the hash?
+
+Probably no.
+
+Should YAML anchors/aliases affect the hash?
+
+The semantic result probably should be hashed, not the syntax.
+
+### Fix
+
+Define:
+
+```text
+YAML
+ → semantic object
+ → normalized JSON-compatible form
+ → canonical serialization
+ → SHA-256
+```
+
+and version that algorithm:
+
+```text
+hash_algorithm = "canonical-json-v1"
+```
+
+---
+
+# Phase 2 configuration
+
+## Issue 40 — Dynaconf setup is incomplete
+
+The design uses:
+
+```text
+settings.toml
+.secrets.toml
+```
+
+but the bootstrap only establishes the Python file and not those configuration contracts.
+
+The settings file also defines:
+
+```text
+OPA_SERVER_URL
+DATABASE_URL
+CACHE_TTL_SECONDS
+ENABLE_STRICT_CONTRACT_CHECKING
+```
+
+with no typed validation layer.
+
+### Fix
+
+Introduce a typed application configuration model around Dynaconf, or use one configuration mechanism consistently.
+
+Recommended:
+
+```text
+environment / secret sources
+        ↓
+Dynaconf
+        ↓
+typed validated Settings
+        ↓
+application
+```
+
+This prevents configuration values from becoming loosely typed strings throughout the code.
+
+---
+
+# Testing — the largest process gap
+
+The Phase 2 design includes component test files.
+
+That is necessary but insufficient.
+
+## Issue 41 — tests do not enforce architectural invariants
+
+You need tests that prove the entire contract:
+
+### Compiler invariants
+
+```text
+invalid YAML → rejected
+invalid schema → rejected
+unknown dependency → rejected
+cycle → rejected
+invalid artifact contract → rejected
+valid manifest → deterministic execution plan
+```
+
+### Polymorphism invariants
+
+```text
+global + industry = deterministic
+global + industry + custom = deterministic
+REPLACE preserves valid downstream edges
+DISABLE cannot leave dangling dependencies
+WRAP cannot introduce cycles
+```
+
+### FSM invariants
+
+```text
+invalid transition → rejected
+valid transition → version increments
+concurrent transition → exactly one succeeds
+failed transition → state unchanged
+```
+
+### Persistence invariants
+
+```text
+definition version immutable
+duplicate logical version rejected
+namespace hierarchy valid
+optimistic lock race deterministic
+```
+
+---
+
+# Recommended revised phase structure
+
+I would change the current implementation sequencing.
+
+## Phase 1 — Compiler foundation
+
+```text
+1. Configuration
+2. Manifest schema
+3. Core immutable domain models
+4. Syntax validation
+5. Semantic manifest validation
+6. Topology validation
+7. Action registry
+8. Contract validation
+9. Compilation IR
+10. Persistence adapter
+```
+
+The important addition is **semantic validation** and **action registry**.
+
+---
+
+# Phase 2 — Polymorphic platform
+
+Then:
+
+```text
+1. Core types/exceptions
+2. Typed configuration
+3. Database/session foundation
+4. Namespace domain model
+5. Namespace resolver
+6. Manifest inheritance model
+7. Merge engine
+8. DAG delta compiler
+9. Contract reconciliation
+10. FSM definition model
+11. FSM runtime
+12. optimistic persistence
+13. hydrator
+14. canonical hashing
+15. domain realizers
+16. integration layer to meta_compiler
+```
+
+The hydrator should move earlier than the current plan because it is effectively the **input boundary** to the entire Phase 2 system.
+
+---
+
+# Priority classification
+
+| Priority | Problem                                                | Phase | Action                                      |
+| -------- | ------------------------------------------------------ | ----- | ------------------------------------------- |
+| **P0**   | Dynamic Pydantic schemas reduce schema fields to `Any` | 1     | Replace with real contract enforcement      |
+| **P0**   | Hamilton lacks action/callable registry                | 1     | Introduce `ActionRegistry`                  |
+| **P0**   | Optimistic locking isn't actually guaranteed by ORM    | 2     | Implement conditional version update        |
+| **P0**   | `meta_compiler` → `meta_polymorph` boundary undefined  | 1/2   | Define integration contract                 |
+| **P0**   | Merge operation semantics unspecified                  | 2     | Define formal DAG delta contract            |
+| **P1**   | Unknown dependency validation missing                  | 1     | Add semantic manifest validation            |
+| **P1**   | Transaction ownership unclear                          | 1/2   | Move transaction scope to service/API layer |
+| **P1**   | FSM audit/history missing                              | 2     | Add immutable transition history            |
+| **P1**   | Permissions schema is weak/inconsistent                | 2     | Define typed permission contract            |
+| **P1**   | Cache invalidation strategy missing                    | 2     | Versioned cache keys/invalidation           |
+| **P1**   | Hash canonicalization rules unspecified                | 2     | Define canonicalization v1                  |
+| **P1**   | DB constraints are too weak                            | 2     | Add integrity constraints                   |
+| **P2**   | Configuration lifecycle/shutdown incomplete            | 2     | Add resource lifecycle                      |
+| **P2**   | Bootstrap project generation incomplete                | 2     | Generate valid pyproject + config artifacts |
+| **P2**   | Component tests lack end-to-end invariants             | 1/2   | Add contract/integration test suite         |
+
+---
+
+# Principal-engineer recommendation
+
+I would **stop adding new Phase 2 engine logic temporarily** and fix four foundational contracts first:
+
+```text
+                 ┌─────────────────────┐
+                 │   YAML Manifest     │
+                 └──────────┬──────────┘
+                            ↓
+                 ┌─────────────────────┐
+                 │ Hydration / Schema  │
+                 └──────────┬──────────┘
+                            ↓
+                 ┌─────────────────────┐
+                 │ Semantic Validation │
+                 └──────────┬──────────┘
+                            ↓
+                 ┌─────────────────────┐
+                 │  Compiler IR        │
+                 └──────────┬──────────┘
+                            ↓
+          ┌─────────────────┴──────────────────┐
+          ↓                                    ↓
+   Topology Validation                  Contract Validation
+          │                                    │
+          └─────────────────┬──────────────────┘
+                            ↓
+                 ┌─────────────────────┐
+                 │ Polymorphic Merge   │
+                 │ / DAG Delta Engine  │
+                 └──────────┬──────────┘
+                            ↓
+                 ┌─────────────────────┐
+                 │ Persistence / FSM   │
+                 └─────────────────────┘
+```
+
+The key architectural principle is: **do not let Pydantic, NetworkX, Hamilton, SQLAlchemy, OPA, or jsonmerge become the domain model.** Those are implementation mechanisms. The system needs its own explicit intermediate representations and invariants, with those libraries plugged into well-defined boundaries.
+
+That change will make the Phase 1 compiler reusable and will prevent Phase 2 from turning into a collection of tightly coupled library adapters.
+
+The attached Phase 1 document establishes the five-stage compiler sequence, while Phase 2 expands the system into namespace, merge, FSM, hydration, and persistence engines; the review above is based on those stated responsibilities and the implementations supplied in the documents.

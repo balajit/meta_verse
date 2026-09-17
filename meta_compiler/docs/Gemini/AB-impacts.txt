@@ -1,0 +1,197 @@
+Based on the provided specification and codebase, here is the identification of files affected by the **Application Builder (AB)** integration requirements and the dependency-ordered plan for implementation.
+
+---
+
+### Affected Files Identification
+
+The following files in `meta_compiler` require modification or contract verification based on the AB integration specification:
+
+1. **`meta_compiler/src/meta_compiler/__init__.py`**
+
+* Needs explicit symbol exports (`compile_and_register_manifest`, `CompiledExecutionGraph`, `MetaCompiler`, `CompiledArtifacts`) and clean `__all__` exposure.
+
+
+
+
+2. **`meta_compiler/src/meta_compiler/domain/ir.py`**
+
+* Defines domain intermediate representations (`ManifestIR`, `NodeIR`, `EdgeIR`) required as input contracts across platform boundaries.
+
+
+
+
+3. **`meta_compiler/src/meta_compiler/guards/syntax_guard.py`**
+
+* Must support `validate_manifest_syntax` structural validation and raise `SyntaxValidationError` on invalid manifest dictionaries.
+
+
+
+
+4. **`meta_compiler/src/meta_compiler/orchestrator.py`**
+
+* Entry points (`compile_manifest`, `compile_and_register_manifest`) must accept pre-parsed canonical `ManifestIR` objects directly instead of assuming raw YAML strings.
+
+
+
+
+5. **`meta_compiler/src/meta_compiler/cli.py`**
+
+* Drives standalone operational execution for `validate` (Stages 1–4) and `register` (Stages 1–5) CLI entry points.
+
+
+
+
+6. **`meta_builder` Integration Boundary / `CompilerAdapter**` (External/Consuming component)
+
+
+* Consumes synthesized `ManifestIR` from `meta_builder` and handles Direct (`in-process`) vs Remote execution modes.
+
+
+
+
+
+---
+
+### Implementation Plan (Ordered by Dependency)
+
+#### Phase 1: Core Domain Models & Public API (Foundation)
+
+*Dependencies: None*
+
+* **Step 1.1: Standardize Public API Exports**
+
+* **File:** `/meta_compiler/src/meta_compiler/__init__.py`
+
+* Ensure core entities are correctly exposed for external consumption by `CompilerAdapter`:
+
+
+```python
+from meta_compiler.compilers.model_compiler import CompiledArtifacts, MetaCompiler
+from meta_compiler.compilers.models import CompiledExecutionGraph
+from meta_compiler.orchestrator import compile_and_register_manifest
+
+__all__ = [
+    "compile_and_register_manifest",
+    "CompiledExecutionGraph",
+    "MetaCompiler",
+    "CompiledArtifacts",
+]
+
+```
+
+
+
+
+* **Step 1.2: Verify Domain Invariant IR**
+
+* **File:** `/meta_compiler/src/meta_compiler/domain/ir.py`
+
+* Verify `ManifestIR`, `NodeIR`, and `EdgeIR` schemas remain zero-dependency dataclasses for cross-platform consumption.
+
+
+
+
+
+---
+
+#### Phase 2: Orchestration & Syntax Guard Adjustments (Core Mechanics)
+
+*Dependencies: Phase 1 (Domain Models)*
+
+* **Step 2.1: Enhance Syntax Guard**
+
+* **File:** `/meta_compiler/src/meta_compiler/guards/syntax_guard.py`
+
+* Ensure `validate_manifest_syntax` gracefully ingests parsed `dict` payloads (from `ManifestIR`) and raises `SyntaxValidationError` upon failure.
+
+
+
+
+* **Step 2.2: Refactor Orchestrator Entry Points for `ManifestIR**`
+
+* **File:** `/meta_compiler/src/meta_compiler/orchestrator.py`
+
+* Ensure `compile_manifest` and `compile_and_register_manifest` accept an instantiated `ManifestIR` object.
+
+
+* Align the 5-stage orchestration pipeline execution order:
+
+
+1. **Stage 1 (Syntax Guard):** Structural validation via `parse_and_validate_yaml` or `validate_manifest_syntax`.
+
+
+2. **Stage 2 (Dynamic Model Compiler):** Pydantic runtime model materialization using `compile_runtime_models`.
+
+
+3. **Stage 3 (Topological Validator):** Acyclic DAG validation using `validate_topology`.
+
+
+4. **Stage 4 (Contract Checker):** Contract verification via `build_hamilton_driver` and `verify_node_contracts`.
+
+
+5. **Stage 5 (Persistence/Registration):** DB persistence via `register_workflow`.
+
+
+
+
+
+
+
+---
+
+#### Phase 3: Application Builder (`CompilerAdapter`) & CLI Integration
+
+*Dependencies: Phase 2 (Orchestration Pipeline)*
+
+* **Step 3.1: Complete Subcommand Driver**
+
+* **File:** `/meta_compiler/src/meta_compiler/cli.py`
+
+* Verify subcommands for operational isolation:
+
+
+* `validate`: In-process dry run execution through Stages 1–4 without database access.
+
+
+* `register`: Full 5-stage execution with database connection registration.
+
+
+
+
+
+
+* **Step 3.2: Scaffold Application Builder Adapter (`CompilerAdapter`)**
+
+* **Location:** `meta_builder` Integration Engine
+
+
+* Implement `CompilerAdapter` to accept synthesized canonical `ManifestIR` produced during Phase A–C checks in `meta_builder`.
+
+
+* Support execution modes:
+
+
+* **Direct Mode (`--mode direct`):** Execute pipeline stages in-process using `MetaCompiler` or `compile_and_register_manifest`.
+
+
+* **Remote Mode (`--mode remote`):** Dispatch `meta_compiler` execution as an isolated downstream worker task.
+
+
+
+
+
+
+
+---
+
+#### Phase 4: Integration & End-to-End Verification
+
+*Dependencies: Phase 3 (Adapter & CLI)*
+
+1. **Unit Testing:** Validate cyclic DAG detection errors (`CyclicGraphError`) in Stage 3 and contract mismatch errors (`ContractValidationError`) in Stage 4.
+
+
+2. **Adapter Dry-Run Verification:** Run `CompilerAdapter` in direct mode against sample canonical `ManifestIR` structures.
+
+
+3. **End-to-End Pipeline Check:** Execute remote pipeline orchestration tasks from `meta_builder` to `meta_compiler`.

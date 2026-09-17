@@ -1,0 +1,41 @@
+To optimize and complete the `meta_compiler` package, several key bugs, orphaned modules, and CLI feature gaps need to be addressed.
+
+**Fix Broken Test Import**
+
+* `tests/test_semantic_validator.py` imports `ManifestSemanticError` from `meta_polymorph.core.exceptions` instead of `meta_compiler.validators.semantic_validator`. Updating this import ensures unit tests run cleanly without external package coupling.
+
+
+
+**Integrate the Semantic Validator into the Orchestrator**
+
+* `ManifestSemanticValidator` in `meta_compiler/validators/semantic_validator.py` provides checks for intra-manifest dependencies, artifact linkages, and static contract type matching.
+
+
+* `compile_manifest` in `orchestrator.py` and `MetaCompiler.compile` in `compilers/model_compiler.py` currently bypass `ManifestSemanticValidator` during compilation. Wiring this validator into Stage 2 of `compile_manifest()` will ensure pre-topology validation catches semantic errors early.
+
+
+
+**Expose Disk Artifact Generation via CLI**
+
+* `CompiledArtifacts` in `compilers/model_compiler.py` includes a `write_to_disk()` method to output `domain_models.py` source code and `dag_blueprint.json` manifest artifacts.
+
+
+* The CLI in `cli.py` only provides `validate` and `register` subcommands. Adding an `--out-dir` option to `cli.py` will allow users to export dynamic Pydantic models and DAG blueprints directly to disk.
+
+
+
+**Implement FSM Validation Logic**
+
+* `schemas/meta_schema_v1.json` specifies definitions for entities (`EntityModel`) and finite state machines (`FSMModel`).
+
+
+* `MetaCompiler.compile()` generates Pydantic dynamic models for entity definitions. Adding FSM validation logic will ensure state transitions, initial states, and guards are structurally consistent prior to graph compilation.
+
+
+
+**Standardize Connection Lifecycle**
+
+* `run_registration()` in `cli.py` creates and disposes of a `create_async_engine` instance per invocation.
+
+
+* Extracting engine creation into `persistence/db_serializer.py` or supporting an externally managed `AsyncEngine`/`AsyncSession` wrapper will streamline runtime reuse when `meta_compiler` is used as an imported library.

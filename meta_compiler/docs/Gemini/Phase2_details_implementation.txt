@@ -1,0 +1,95 @@
+You are a senior engineer at Google using your system knowledge and experience to build phase 2 of Meta_builder project.
+
+The component directory structure for Phase 2 (`meta_compiler`) maps directly to the C4 Level 1–4 specifications and the identified open-source components.
+
+```text
+meta_compiler/
+├── README.md
+├── pyproject.toml
+├── config/
+│   ├── settings.py                         # Dynaconf / Hydra configuration management
+│   └── opa_policies/
+│       └── namespace_resolution.rego       # Open Policy Agent rules for dynamic tenant scoping
+│
+├── core/
+│   ├── __init__.py
+│   ├── exceptions.py                       # Custom FSM, merge, & resolution exception hierarchy
+│   └── types.py                            # Core type aliases, Enums (States, Ops, Levels)
+│
+├── namespace/                              # 1. Namespace Resolution Engine
+│   ├── __init__.py
+│   ├── models.py                           # Pydantic schemas for Namespace Nodes & Paths
+│   ├── tree_resolver.py                    # NetworkX DiGraph inheritance tree & cycle guard
+│   ├── fallback_chain.py                   # Custom/Industry/Global resolution path evaluator
+│   └── cache_guard.py                      # In-memory resolution path caching layer
+│
+├── merger/                                 # 2. Polymorphic Merge Engine
+│   ├── __init__.py
+│   ├── deep_merger.py                      # jsonmerge & jsonpatch structural delta applicator
+│   ├── dag_delta_compiler.py               # Graph transformation compiler (ADD, REPLACE, DISABLE, WRAP)
+│   ├── dynamic_schema_builder.py           # Pydantic V2 dynamic model factory (create_model)
+│   └── contract_checker.py                 # Apache Hamilton signature & contravariance/covariance enforcer
+│
+├── fsm/                                    # 3. Entity FSM State Engine
+│   ├── __init__.py
+│   ├── models.py                           # Pydantic models for FSM rules, transitions, & events
+│   ├── lifecycle_guard.py                  # python-statemachine wrapper & Guard Matrix evaluator
+│   ├── hooks.py                            # Pre/Post transition side-effect hook registry
+│   └── state_persister.py                  # SQLAlchemy Async atomic updates (version = version + 1)
+│
+├── hydrator/                               # 4. Dynamic Manifest Hydrator & Manifest Realization
+│   ├── __init__.py
+│   ├── yaml_parser.py                      # Ruamel.yaml lossless AST manifest parser
+│   ├── schema_validator.py                 # JSONSchema (Draft 2020-12) pre-instantiation validator
+│   ├── hasher.py                           # Hashlib / Canonical JSON deterministic hash builder
+│   └── realizers/
+│       ├── __init__.py
+│       ├── base_realizer.py                # Abstract Base Realizer protocol
+│       ├── lp_realizer.py                  # Learning Platform domain manifest realizer
+│       └── cp_realizer.py                  # Commerce Platform domain manifest realizer
+│
+├── db/                                     # Database Layer
+│   ├── __init__.py
+│   ├── session.py                          # SQLAlchemy Async engine and session factory
+│   └── models/
+│       ├── __init__.py
+│       ├── namespaces.py                   # meta_namespaces SQLAlchemy table definition
+│       ├── entity_definitions.py           # meta_entity_definitions SQLAlchemy table definition
+│       ├── entity_fsm_rules.py             # meta_entity_fsm_rules SQLAlchemy table definition
+│       └── entity_instances.py             # meta_entity_instances SQLAlchemy table definition
+│
+├── manifests/                              # Declarative YAML Manifest Specifications
+│   ├── global/
+│   │   └── default_entity_base.yaml        # Base entity definitions
+│   ├── industry/
+│   │   ├── learning_platform_base.yaml     # LP platform domain base manifest
+│   │   └── commerce_platform_base.yaml     # CP platform domain base manifest
+│   └── custom/
+│       └── acme_mobile_override.yaml       # Example child tenant override manifest
+│
+└── tests/
+    ├── __init__.py
+    ├── test_namespace_resolution.py
+    ├── test_polymorphic_merger.py
+    ├── test_entity_fsm.py
+    └── test_manifest_hydration.py
+
+```
+
+---
+
+### **Directory Mapping to Open-Source Stack**
+
+* **`namespace/`:** Utilizes **NetworkX** inside `tree_resolver.py` for DAG inheritance graph logic and **OPA** in `config/opa_policies/` for rule evaluation.
+
+
+* **`merger/`:** Integrates **`jsonmerge`**, **`jsonpatch`**, **Pydantic V2**, and **Apache Hamilton** across `deep_merger.py`, `dynamic_schema_builder.py`, and `contract_checker.py`.
+
+
+* **`fsm/`:** Leverages **`python-statemachine`** in `lifecycle_guard.py` and **SQLAlchemy Async** optimistic locking in `state_persister.py`.
+
+
+* **`hydrator/`:** Houses **Ruamel.yaml**, **JSONSchema**, and **Hashlib** utilities to parse, validate, and hash manifests prior to DB persistence.
+
+-------
+Customer Input: First task is to create a script that generates the directories and create README.md with describing the functionality for each directory and also create the empty files

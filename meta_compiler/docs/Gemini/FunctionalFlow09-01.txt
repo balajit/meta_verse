@@ -1,0 +1,96 @@
+`meta_compiler` processes declarative workflow manifests through a 5-stage compilation and validation pipeline that transforms raw input definitions into typed execution graphs and database records.
+
+**Input Specifications**
+
+* **Primary Manifest Input**: Formatted as raw YAML/JSON string, primitive `dict[str, Any]`, dataclass `ManifestIR`, or a Pydantic `BaseModel`.
+
+
+* **Auxiliary Inputs**:
+* `ActionRegistry`: Mappings of string action keys to python callables and input/output Pydantic boundary schemas.
+
+
+* `CompilerSettings`: Runtime settings including target JSON meta-schema file path and database connection URLs.
+
+
+* `AsyncSession` *(Registration mode only)*: SQLAlchemy async session for database persistence.
+
+
+
+
+
+**5-Stage Processing Pipeline**
+
+1. **Stage 1: Syntax Guard & Parsing** (`syntax_guard.py`)
+* **Processing**: Converts raw YAML strings via PyYAML into primitive Python dictionaries and executes structural validation against the static Draft 2020-12 schema (`meta_schema_v1.json`) using `jsonschema.Draft202012Validator`.
+
+
+* **Key Transformation**: Raw String/Input $\rightarrow$ Validated Primitive Dictionary (`raw_validated_dict`).
+
+
+* **Fallout**: `SyntaxValidationError` or `ManifestSyntaxError` on YAML syntax errors or schema violations.
+
+
+
+
+2. **Stage 2: Dynamic Model & IR Compilation** (`model_compiler.py`)
+* **Processing**: Generates dynamic domain `BaseModel` classes for entity ASTs using `pydantic.create_model`. Compiles task definitions into immutable Pydantic V2 specifications (`WorkflowManifestSpec`, `TaskNodeSpec`, `ArtifactRefSpec`) and synthesizes boundary models using collision-free SHA-256 hash digests.
+
+
+* **Key Transformation**: `raw_validated_dict` $\rightarrow$ Strongly typed `WorkflowManifestSpec` and `Dict[str, Type[BaseModel]]`.
+
+
+* **Fallout**: `ModelCompilationError` or Pydantic `ValidationError` on bad schema types or invalid identifier names.
+
+
+
+
+3. **Stage 3: Topological Graph Validation** (`topology_validator.py`)
+* **Processing**: Verifies that all dependency IDs exist, builds a directed graph (`NetworkX DiGraph`) with edges pointing strictly from upstream prerequisites to downstream dependents, asserts acyclic constraints, and calculates topological generations.
+
+
+* **Key Transformation**: `WorkflowManifestSpec` $\rightarrow$ Directed Graph (`nx.DiGraph`) & immutable `ExecutionPlan` (defining stages, critical path, roots, and leaves).
+
+
+* **Fallout**: `TopologyValidationError` (missing dependency targets) or `CyclicGraphError` (circular execution loops).
+
+
+
+
+4. **Stage 4: Contract Checking & Hamilton Dry-Run** (`contract_checker.py`)
+* **Processing**: Registers compiled domain models into `ActionRegistry`, evaluates producer-output to consumer-input type compatibility (`is_type_compatible`), dynamic synthesis of an in-memory Apache Hamilton module, and executes a stage-by-stage dry-run.
+
+
+* **Key Transformation**: Execution Plan & Registry $\rightarrow$ Type-verified contract execution driver.
+
+
+* **Fallout**: `ContractValidationError` on type mismatch or missing stage outputs.
+
+
+
+
+5. **Stage 5: Database Persistence** (`db_serializer.py` & `orchestrator.py`)
+* **Processing**: Transforms compiled artifacts into a JSONB database payload, executes optional pre-commit snapshot validation hooks, and stages an async insert statement into the `meta_workflow_definitions` table without auto-committing transaction scope.
+
+
+* **Key Transformation**: Validated IR Definition $\rightarrow$ Staged PostgreSQL record & `CompiledExecutionGraph` IR.
+
+
+* **Fallout**: `SerializationError` or `PipelineCompilationError`.
+
+
+
+
+
+**Output & Fallout Summary**
+
+| Execution Path | Final Output | Expected Artifacts | Primary Fallout Exception |
+| --- | --- | --- | --- |
+| **In-Memory Dry Run** (`compile_manifest`) | `CompiledWorkflowDefinition`<br> | `manifest_spec`, `execution_plan`, `raw_manifest`<br> | `PipelineCompilationError`<br> |
+| **Full Registration** (`compile_and_register_manifest`) | `CompiledExecutionGraph`<br> | `manifest_id`, `nodes` execution metadata map, staged DB record
+
+ | `PipelineCompilationError`<br> |
+| **Disk Export** (`CompiledArtifacts.write_to_disk`) | Local Filesystem Output
+
+ | `dag_blueprint.json`, `domain_models.py`<br> | `ModelCompilationError` / File I/O Error
+
+ |

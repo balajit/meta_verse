@@ -1,0 +1,1936 @@
+The production-grade directory structure for the **Meta-Builder Brain** (`meta_builder_brain`) isolates ingestion pipelines, LLM synthesis workflows, policy guardrails, and dynamic schema compilation into distinct runtime packages.
+
+```text
+meta_builder_brain/
+├── docker/
+│   ├── Dockerfile
+│   └── opa/
+│       └── config.yaml           # OPA sidecar configuration
+├── config/
+│   ├── settings.py               # Application settings & OpenBao secrets fetcher
+│   └── policies/
+│       └── fsm_inheritance.rego  # Rego policies enforcing inheritance & state rules
+├── ingestion/
+│   ├── __init__.py
+│   ├── router.py                 # FastAPI webhook and REST ingestion gateway
+│   ├── document_parser.py        # PyMuPDF & Docling text/PDF hierarchical partitioner
+│   ├── web_scraper.py            # Playwright headless browser pool for web standards
+│   └── schema_parser.py         # OpenAPI v3 & JSON Schema AST extractor
+├── synthesis/
+│   ├── __init__.py
+│   ├── agent.py                  # Single-agent harness (Hermes) orchestrator
+│   ├── mcp_server.py             # Model Context Protocol tool bindings for sub-schemas
+│   ├── llm_client.py             # Anthropic/Qwen client with asyncio semaphore limits
+│   └── prompts/
+│       ├── system_prompts.py     # Schema extraction & FSM lifecycle instructions
+│       └── json_schemas.py       # Pydantic-backed JSON schema constraints
+├── validation/
+│   ├── __init__.py
+│   ├── pydantic_models.py        # Strict Meta-Model manifest validation models
+│   ├── retry_loop.py             # Error-trace capture & feedback prompt generator
+│   └── opa_evaluator.py          # Asynchronous OPA sidecar HTTP client
+├── compiler/
+│   ├── __init__.py
+│   ├── metaclass_builder.py      # Dynamic Python metaclass ORM & model generator
+│   └── store.py                  # SQLAlchemy session manager & PostgreSQL compiler
+├── main.py                       # Application entrypoint & worker event loops
+└── docker-compose.yml            # Multi-container orchestration mesh
+
+```
+
+##Gemini Implementation Plan:
+The bottom-up implementation plan resolves dependencies sequentially, ensuring core schemas, infrastructure connectors, and validation contracts are established before higher-level agents, AST parsers, or dynamic metaclass ORM compilers invoke them.
+
+---
+
+**Step 1: Environment, Configuration & Shared Domain Core**
+
+* **`docker/` & `docker-compose.yml**`: Provision container configurations for PostgreSQL, OpenBao secrets management, and the Open Policy Agent (OPA) sidecar engine (`opa/config.yaml`).
+
+
+* **`config/policies/fsm_inheritance.rego`**: Author Rego policy rules enforcing immutable primary key structures and parent state transition invariants.
+
+
+* **`config/settings.py`**: Build `pydantic-settings` management integrated with OpenBao HTTP APIs to authenticate and retrieve runtime API keys, database credentials, and OPA endpoints.
+
+
+* **`core/types.py` & `core/exceptions.py**`: Define base domain enumerations (`NamespaceTier`), context containers (`ResolutionContext`), and exception hierarchies (`ResolutionError`, `NamespaceCycleError`, `ValidationErrorTrace`).
+
+
+
+---
+
+**Step 2: Validation Contracts & Persistence Foundation**
+
+* **`validation/pydantic_models.py`**: Define strict Pydantic Meta-Model models enforcing AST graph structures, entity definitions, and state machine transition payloads.
+
+
+* **`compiler/store.py`**: Configure the async SQLAlchemy engine (`asyncpg`), session factory, and persistence models for `NamespaceManifestModel` and schema revision histories.
+
+
+* **`validation/opa_evaluator.py`**: Implement an async HTTP client (`httpx`) to post manifest evaluation payloads directly to the OPA sidecar for policy verification.
+
+
+
+---
+
+**Step 3: Rate-Limited Outbound Transport & Ingestion Pipelines**
+
+* **`synthesis/llm_client.py`**: Construct the outbound Anthropic/Qwen API client wrapped with an `asyncio.Semaphore` to enforce strict concurrency limits and token bucket rate limits.
+
+
+* **`synthesis/prompts/`**: Define zero-shot system prompts (`system_prompts.py`) and strict JSON schema generation constraints (`json_schemas.py`).
+
+
+* **`ingestion/document_parser.py`**: Build text and PDF partitioners utilizing PyMuPDF and Docling to convert unstructured specs into structured Markdown tree graphs.
+
+
+* **`ingestion/web_scraper.py`**: Implement Playwright headless browser instance pooling for scraping dynamic online standards.
+
+
+* **`ingestion/schema_parser.py`**: Parse OpenAPI v3 and JSON Schemas into normalized AST property trees.
+
+
+* **`validation/retry_loop.py`**: Build an automated correction loop that intercepts Pydantic `ValidationError` tracebacks and generates feedback prompt payloads for LLM re-synthesis.
+
+
+
+---
+
+**Step 4: Synthesis Agent & Model Context Protocol Tools**
+
+* **`synthesis/mcp_server.py`**: Register MCP tools allowing external agents to query `global/` base schemas and check existing tenant manifests during generation.
+
+
+* **`synthesis/agent.py`**: Build the single-agent harness (Hermes) orchestrating two-pass generation: Pass-1 raw entity extraction and Pass-2 state machine and cross-reference validation.
+
+
+
+---
+
+**Step 5: Namespace Resolution, Caching & Dynamic ORM Compilation**
+
+* **`namespace/tree_resolver.py`**: Implement PostgreSQL recursive CTE queries (`compiler/store.py`) to derive hierarchical ancestor chains (`Custom` $\rightarrow$ `Industry` $\rightarrow$ `Global`).
+
+
+* **`namespace/fallback_chain.py`**: Wire `TreeResolver` output through `validation/opa_evaluator.py` to validate lineage adherence against `fsm_inheritance.rego`.
+
+
+* **`namespace/cache_guard.py`**: Build an `asyncio.Lock`-guarded TTL memory store to cache verified `ResolutionPath` instances.
+
+
+* **`compiler/metaclass_builder.py`**: Construct custom Python metaclass factories (`type()`) that traverse verified `ResolutionPath` manifests to dynamically compile executable SQLAlchemy ORM models at runtime.
+
+
+
+---
+
+**Step 6: Ingestion Gateway & Application Runtime**
+
+* **`ingestion/router.py`**: Implement FastAPI REST endpoints and webhook receivers for RFC payloads, OpenAPI URLs, and raw schema submissions.
+
+
+* **`main.py`**: Bind application lifespans, initialize DB pool connections, wire `ingestion/router.py`, and launch background event processing workers.
+
+
+----
+
+User Input: As a senior engineer at google, use your knowledge and experience to build the logic for
+**Step 1: Environment, Configuration & Shared Domain Core**
+* **`docker/` & `docker-compose.yml**`: Provision container configurations for PostgreSQL, OpenBao secrets management, and the Open Policy Agent (OPA) sidecar engine (`opa/config.yaml`).
+* **`config/policies/fsm_inheritance.rego`**: Author Rego policy rules enforcing immutable primary key structures and parent state transition invariants.
+* **`config/settings.py`**: Build `pydantic-settings` management integrated with OpenBao HTTP APIs to authenticate and retrieve runtime API keys, database credentials, and OPA endpoints.
+* **`core/types.py` & `core/exceptions.py**`: Define base domain enumerations (`NamespaceTier`), context containers (`ResolutionContext`), and exception hierarchies (`ResolutionError`, `NamespaceCycleError`, `ValidationErrorTrace`).
+
+Gemini Design:
+**`docker-compose.yml`**
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: meta_brain_postgres
+    environment:
+      POSTGRES_DB: meta_builder
+      POSTGRES_USER: brain_admin
+      POSTGRES_PASSWORD: brain_secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brain_admin -d meta_builder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  openbao:
+    image: openbao/openbao:2.1.0
+    container_name: meta_brain_openbao
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: root_dev_token
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+
+  opa:
+    image: openpolicyagent/opa:0.67.0-static
+    container_name: meta_brain_opa
+    command:
+      - "run"
+      - "--server"
+      - "--log-level=debug"
+      - "--config-file=/etc/opa/config.yaml"
+      - "/policies"
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./docker/opa/config.yaml:/etc/opa/config.yaml:ro
+      - ./config/policies:/policies:ro
+
+volumes:
+  pgdata:
+
+```
+
+---
+
+**`docker/Dockerfile`**
+
+```dockerfile
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml .
+RUN pip install --upgrade pip && pip install .
+
+FROM python:3.11-slim as runtime
+
+WORKDIR /app
+
+RUN useradd -m -u 1000 appuser
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+COPY src/ /app/src/
+COPY config/ /app/config/
+
+USER appuser
+
+EXPOSE 8000
+CMD ["python", "-m", "meta_builder_brain.main"]
+
+```
+
+---
+
+**`docker/opa/config.yaml`**
+
+```yaml
+services:
+  local:
+    url: http://localhost:8181
+
+decision_logs:
+  console: true
+
+status:
+  console: true
+
+```
+
+---
+
+**`config/policies/fsm_inheritance.rego`**
+
+```rego
+# Rego policies enforcing inheritance & state rules
+package fsm.inheritance
+
+import future.keywords.in
+import future.keywords.every
+
+default allow = false
+
+# Allow resolution if no violations exist
+allow {
+    count(violations) == 0
+}
+
+# Rule 1: Child namespaces cannot mutate immutable primary key definitions
+violations[msg] {
+    some entity in input.ancestors
+    child_pk := input.context.child_schema.entities[entity].primary_key
+    parent_pk := input.context.parent_schema.entities[entity].primary_key
+    child_pk != parent_pk
+    msg := sprintf("Immutable Primary Key violation for entity '%s': child pk '%s' does not match parent pk '%s'", [entity, child_pk, parent_pk])
+}
+
+# Rule 2: Parent state transition invariants cannot be removed or altered in child FSMs
+violations[msg] {
+    some entity, fsm in input.context.parent_schema.fsms
+    some state, transitions in fsm.immutable_states
+    some transition in transitions
+
+    # Check if child FSM breaks the transition invariant
+    child_transitions := input.context.child_schema.fsms[entity].states[state]
+    not transition in child_transitions
+    msg := sprintf("FSM State invariant broken for entity '%s' in state '%s': missing required transition '%s'", [entity, state, transition])
+}
+
+```
+
+---
+
+**`src/meta_builder_brain/core/exceptions.py`**
+
+```python
+from typing import Any, Dict, Optional
+
+
+class MetaBrainError(Exception):
+    """Base exception for all Meta-Builder Brain runtime failures."""
+
+    def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.context = context or {}
+
+
+class ResolutionError(MetaBrainError):
+    """Raised when namespace resolution fails along the hierarchy tree."""
+
+
+class NamespaceCycleError(ResolutionError):
+    """Raised when a cyclical parent-child inheritance reference is detected."""
+
+
+class OpenBaoError(MetaBrainError):
+    """Raised when secret retrieval or authentication with OpenBao fails."""
+
+
+class ConfigurationError(MetaBrainError):
+    """Raised when system startup configuration parameters are missing or invalid."""
+
+
+class ValidationErrorTrace(MetaBrainError):
+    """Captures Pydantic or Rego policy failures with diagnostic error traces."""
+
+    def __init__(self, message: str, raw_trace: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message, context)
+        self.raw_trace = raw_trace
+
+```
+
+---
+
+**`src/meta_builder_brain/core/types.py`**
+
+```python
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field, ConfigDict
+
+
+class NamespaceTier(str, Enum):
+    GLOBAL = "global"
+    INDUSTRY = "industry"
+    CUSTOM = "custom"
+
+
+class ResolutionContext(BaseModel):
+    """Encapsulates tenant traversal state for resolving ancestor paths."""
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: str = Field(..., description="Unique tenant identifier")
+    industry_domain: str = Field(..., description="Target industry vertical (e.g., telecom, fintech)")
+    custom_namespace: Optional[str] = Field(None, description="Optional tenant-specific override namespace")
+
+
+class ResolutionPath(BaseModel):
+    """Output path computed by tree resolution and validated by OPA."""
+    model_config = ConfigDict(frozen=True)
+
+    path: List[str] = Field(..., description="Ordered list of namespace IDs from child to root")
+    tenant_id: str
+    effective_tier: NamespaceTier
+    is_cached: bool = False
+
+
+class ASTNodeProperty(BaseModel):
+    type: str
+    required: bool = True
+    is_primary_key: bool = False
+    description: Optional[str] = None
+
+
+class ASTNode(BaseModel):
+    name: str
+    properties: Dict[str, ASTNodeProperty]
+    parent_ref: Optional[str] = None
+
+
+class PropertyGraph(BaseModel):
+    nodes: Dict[str, ASTNode]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+```
+
+---
+
+**`src/meta_builder_brain/config/settings.py`**
+
+```python
+import os
+from typing import Any, Dict, Optional
+import httpx
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from meta_builder_brain.core.exceptions import OpenBaoError
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # Application Environment
+    ENV: str = Field("development", alias="ENVIRONMENT")
+    LOG_LEVEL: str = Field("INFO", alias="LOG_LEVEL")
+
+    # Storage & Sidecars
+    DATABASE_URL: str = Field("postgresql+asyncpg://brain_admin:brain_secure_password@localhost:5432/meta_builder")
+    OPA_URL: str = Field("http://localhost:8181")
+    CACHE_TTL_SECONDS: int = Field(300, alias="CACHE_TTL_SECONDS")
+
+    # OpenBao Secrets Configuration
+    OPENBAO_ADDR: str = Field("http://localhost:8200")
+    OPENBAO_TOKEN: str = Field("root_dev_token")
+    OPENBAO_SECRET_PATH: str = Field("secret/data/meta_builder")
+
+    # LLM Service Keys (Populated at runtime via OpenBao)
+    ANTHROPIC_API_KEY: Optional[str] = None
+    QWEN_API_KEY: Optional[str] = None
+
+    async def load_secrets_from_openbao(self) -> None:
+        """Fetches dynamic API keys and credentials from OpenBao container HTTP endpoints."""
+        url = f"{self.OPENBAO_ADDR.rstrip('/')}/v1/{self.OPENBAO_SECRET_PATH.lstrip('/')}"
+        headers = {"X-Bao-Token": self.OPENBAO_TOKEN}
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 404:
+                    # Non-fatal in dev mode if secrets path hasn't been initialized
+                    return
+                response.raise_for_status()
+
+                payload: Dict[str, Any] = response.json()
+                secrets = payload.get("data", {}).get("data", {})
+
+                if "ANTHROPIC_API_KEY" in secrets:
+                    self.ANTHROPIC_API_KEY = secrets["ANTHROPIC_API_KEY"]
+                if "QWEN_API_KEY" in secrets:
+                    self.QWEN_API_KEY = secrets["QWEN_API_KEY"]
+                if "DATABASE_URL" in secrets:
+                    self.DATABASE_URL = secrets["DATABASE_URL"]
+
+            except httpx.HTTPError as err:
+                raise OpenBaoError(
+                    f"Failed to fetch secret parameters from OpenBao at {url}: {str(err)}",
+                    context={"status_code": getattr(err.response, "status_code", None)}
+                ) from err
+
+
+settings = Settings()
+
+```
+----
+User Input: As a Google engineer, use your knowledge and coding skills to implement the following logic.
+
+**Step 2: Validation Contracts & Persistence Foundation**
+* **`validation/pydantic_models.py`**: Define strict Pydantic Meta-Model models enforcing AST graph structures, entity definitions, and state machine transition payloads.
+* **`compiler/store.py`**: Configure the async SQLAlchemy engine (`asyncpg`), session factory, and persistence models for `NamespaceManifestModel` and schema revision histories.
+* **`validation/opa_evaluator.py`**: Implement an async HTTP client (`httpx`) to post manifest evaluation payloads directly to the OPA sidecar for policy verification.
+
+Google Design: Code implementation
+
+**`src/meta_builder_brain/validation/pydantic_models.py`**
+
+```python
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+
+
+class AttributeType(str, Enum):
+    STRING = "string"
+    INTEGER = "integer"
+    FLOAT = "float"
+    BOOLEAN = "boolean"
+    DATETIME = "datetime"
+    UUID = "uuid"
+    JSON = "json"
+
+
+class AttributeModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(..., description="Attribute name")
+    data_type: AttributeType = Field(..., description="Target runtime data type")
+    primary_key: bool = Field(default=False, description="Primary key indicator")
+    nullable: bool = Field(default=True, description="Nullability constraint")
+    default_value: Optional[Any] = Field(default=None, description="Default column value")
+
+
+class TransitionModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    from_state: str = Field(..., description="Origin state identifier")
+    to_state: str = Field(..., description="Target state identifier")
+    trigger_event: str = Field(..., description="Event triggering state shift")
+    guards: List[str] = Field(default_factory=list, description="Guarding conditions required for transition")
+
+
+class FSMModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    entity_name: str = Field(..., description="Bound entity identifier")
+    initial_state: str = Field(..., description="Entrypoint state")
+    states: List[str] = Field(..., description="Exhaustive list of valid FSM states")
+    immutable_states: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Map of protected states to required immutable child transitions"
+    )
+    transitions: List[TransitionModel] = Field(..., description="Allowed state transitions")
+
+
+class EntityModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(..., description="Entity identifier")
+    primary_key: str = Field(..., description="Designated primary key field name")
+    attributes: Dict[str, AttributeModel] = Field(..., description="Map of field definitions")
+    relationships: Dict[str, str] = Field(default_factory=dict, description="Map of relation fields to target entities")
+
+    @field_validator("attributes")
+    @classmethod
+    def validate_pk_exists(cls, v: Dict[str, AttributeModel], info: Any) -> Dict[str, AttributeModel]:
+        pk_field = info.data.get("primary_key")
+        if pk_field and pk_field not in v:
+            raise ValueError(f"Primary key field '{pk_field}' must be defined within entity attributes.")
+        return v
+
+
+class NamespaceManifest(BaseModel):
+    """Canonical Meta-Model manifest schema validated before OPA evaluation and DB storage."""
+    model_config = ConfigDict(frozen=True)
+
+    namespace_id: str = Field(..., description="Unique namespace node identifier")
+    parent_id: Optional[str] = Field(None, description="Parent namespace identifier in hierarchy")
+    tier: str = Field(..., description="Tier level (global, industry, custom)")
+    version: int = Field(default=1, description="Monotonically increasing schema revision")
+    entities: Dict[str, EntityModel] = Field(..., description="Domain entities defined in this manifest")
+    fsms: Dict[str, FSMModel] = Field(default_factory=dict, description="State machine configurations by entity name")
+
+```
+
+---
+
+**`src/meta_builder_brain/compiler/store.py`**
+
+```python
+from datetime import datetime
+from typing import AsyncGenerator, Dict, Any, Optional
+from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from meta_builder_brain.config.settings import settings
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class NamespaceManifestModel(Base):
+    __tablename__ = "namespace_manifests"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String(128), ForeignKey("namespace_manifests.id"), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    manifest_data: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    revisions: Mapped[list["SchemaRevisionModel"]] = relationship("SchemaRevisionModel", back_populates="manifest", cascade="all, delete-orphan")
+
+
+class SchemaRevisionModel(Base):
+    __tablename__ = "schema_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    manifest_id: Mapped[str] = mapped_column(String(128), ForeignKey("namespace_manifests.id"), nullable=False, index=True)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    diff_payload: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    manifest: Mapped[NamespaceManifestModel] = relationship("NamespaceManifestModel", back_populates="revisions")
+
+
+# Async Engine & Session Factory initialization
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=(settings.LOG_LEVEL == "DEBUG"),
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+)
+
+AsyncSessionFactory = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+)
+
+
+async def init_db() -> None:
+    """Provisions persistence tables during application lifecycle initialization."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency generator delivering bounded transactional async sessions."""
+    async with AsyncSessionFactory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+```
+
+---
+
+**`src/meta_builder_brain/validation/opa_evaluator.py`**
+
+```python
+from typing import Any, Dict
+import httpx
+
+from meta_builder_brain.config.settings import settings
+from meta_builder_brain.core.exceptions import ValidationErrorTrace
+
+
+class OPAEvaluator:
+    """Asynchronous HTTP client interfacing with localized Open Policy Agent sidecars."""
+
+    def __init__(self, opa_url: str = settings.OPA_URL) -> None:
+        self.opa_url = opa_url.rstrip("/")
+
+    async def evaluate_policy(self, policy_path: str, input_payload: Dict[str, Any]) -> bool:
+        """Submits synthesized manifests to OPA endpoint to execute Rego governance policy checks."""
+        endpoint = f"{self.opa_url}/v1/data/{policy_path.lstrip('/')}"
+        payload = {"input": input_payload}
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                response = await client.post(endpoint, json=payload)
+                response.raise_for_status()
+
+                result: Dict[str, Any] = response.json().get("result", {})
+
+                # Check top-level boolean decision or list of violations
+                is_allowed: bool = result.get("allow", False)
+                violations = result.get("violations", [])
+
+                if not is_allowed or violations:
+                    raise ValidationErrorTrace(
+                        message=f"OPA policy validation failed for path '{policy_path}'. Violations count: {len(violations)}",
+                        raw_trace={"violations": violations, "raw_result": result},
+                        context={"policy_path": policy_path}
+                    )
+
+                return True
+
+            except httpx.HTTPStatusError as err:
+                raise ValidationErrorTrace(
+                    message=f"OPA HTTP evaluation returned failure status code {err.response.status_code}",
+                    raw_trace={"response_text": err.response.text},
+                    context={"policy_path": policy_path, "status_code": err.response.status_code}
+                ) from err
+            except httpx.RequestError as err:
+                raise ValidationErrorTrace(
+                    message=f"Failed to connect to OPA sidecar at {endpoint}: {str(err)}",
+                    raw_trace={"error": str(err)},
+                    context={"policy_path": policy_path}
+                ) from err
+
+```
+---
+**Step 3: Rate-Limited Outbound Transport & Ingestion Pipelines**
+
+* **`synthesis/llm_client.py`**: Construct the outbound Anthropic/Qwen API client wrapped with an `asyncio.Semaphore` to enforce strict concurrency limits and token bucket rate limits.
+* **`synthesis/prompts/`**: Define zero-shot system prompts (`system_prompts.py`) and strict JSON schema generation constraints (`json_schemas.py`).
+* **`ingestion/document_parser.py`**: Build text and PDF partitioners utilizing PyMuPDF and Docling to convert unstructured specs into structured Markdown tree graphs.
+* **`ingestion/web_scraper.py`**: Implement Playwright headless browser instance pooling for scraping dynamic online standards.
+* **`ingestion/schema_parser.py`**: Parse OpenAPI v3 and JSON Schemas into normalized AST property trees.
+* **`validation/retry_loop.py`**: Build an automated correction loop that intercepts Pydantic `ValidationError` tracebacks and generates feedback prompt payloads for LLM re-synthesis.
+
+Gemini Design:
+
+**`src/meta_builder_brain/synthesis/llm_client.py`**
+
+```python
+import asyncio
+from typing import Any, Dict, Optional
+import httpx
+from anthropic import AsyncAnthropic
+
+from meta_builder_brain.config.settings import settings
+from meta_builder_brain.core.exceptions import MetaBrainError
+
+
+class LLMClient:
+    """Async client managing outbound requests to Anthropic and Qwen APIs with concurrency bounds."""
+
+    def __init__(self, max_concurrent_requests: int = 5) -> None:
+        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self._anthropic_client: Optional[AsyncAnthropic] = None
+
+    @property
+    def anthropic(self) -> AsyncAnthropic:
+        if not self._anthropic_client:
+            if not settings.ANTHROPIC_API_KEY:
+                raise MetaBrainError("Anthropic API key is not configured in settings.")
+            self._anthropic_client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        return self._anthropic_client
+
+    async def generate_anthropic(
+        self,
+        prompt: str,
+        system_prompt: str,
+        model: str = "claude-3-5-sonnet-20241022",
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> str:
+        async with self.semaphore:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+
+    async def generate_qwen_json(
+        self,
+        prompt: str,
+        system_prompt: str,
+        response_format: Dict[str, Any],
+        endpoint_url: str = "http://localhost:8000/v1/chat/completions",
+    ) -> Dict[str, Any]:
+        """Queries local/self-hosted Qwen endpoint enforcing structured JSON output constraints."""
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object", "schema": response_format},
+            "temperature": 0.0,
+        }
+        headers = {"Authorization": f"Bearer {settings.QWEN_API_KEY or 'dev'}"}
+
+        async with self.semaphore:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                res = await client.post(endpoint_url, json=payload, headers=headers)
+                res.raise_for_status()
+                data = res.json()
+                return data["choices"][0]["message"]["content"]
+
+```
+
+---
+
+**`src/meta_builder_brain/synthesis/prompts/json_schemas.py`**
+
+```python
+from typing import Any, Dict
+from meta_builder_brain.validation.pydantic_models import NamespaceManifest
+
+MANIFEST_EXTRACTION_JSON_SCHEMA: Dict[str, Any] = NamespaceManifest.model_json_schema()
+
+RAW_ENTITY_EXTRACTION_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "primary_key": {"type": "string"},
+                    "attributes": {"type": "object"},
+                    "relationships": {"type": "object"},
+                },
+                "required": ["name", "primary_key", "attributes"],
+            },
+        }
+    },
+    "required": ["entities"],
+}
+
+```
+
+---
+
+**`src/meta_builder_brain/synthesis/prompts/system_prompts.py`**
+
+```python
+SCHEMA_EXTRACTION_SYSTEM_PROMPT = """
+You are a Principal Software Architect synthesizing domain specifications into strict AST Meta-Models.
+Extract entities, primitive/complex data types, primary keys, and relationships from the provided specification.
+Strict Rules:
+1. Output MUST strictly adhere to the requested JSON Schema without conversational preambles.
+2. Preserve primary keys strictly as declared in ancestor contexts.
+3. Explicitly define field nullability and type constraints.
+"""
+
+FSM_LIFECYCLE_SYSTEM_PROMPT = """
+You are a Formal Methods State Machine Architect.
+Construct finite state machine (FSM) representations for domain entities.
+Ensure state transitions include concrete triggers, guard conditions, and preserve parent immutable state invariants.
+Output valid JSON matching the FSM schema.
+"""
+
+```
+
+---
+
+**`src/meta_builder_brain/ingestion/document_parser.py`**
+
+```python
+from pathlib import Path
+from typing import Dict, Any, Union
+import fitz  # PyMuPDF
+from docling.document_converter import DocumentConverter
+
+from meta_builder_brain.core.exceptions import MetaBrainError
+
+
+class DocumentParser:
+    """Parses PDF and Markdown documents into hierarchical text blocks using PyMuPDF and Docling."""
+
+    def __init__(self) -> None:
+        self.docling_converter = DocumentConverter()
+
+    def parse_pdf_pymupdf(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+        """Fast unstructured text extraction via PyMuPDF."""
+        path = Path(file_path)
+        if not path.exists():
+            raise MetaBrainError(f"File not found: {path}")
+
+        pages = []
+        doc = fitz.open(path)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            pages.append({
+                "page_number": page_num + 1,
+                "text": page.get_text("text"),
+                "blocks": page.get_text("blocks"),
+            })
+        doc.close()
+        return {"filename": path.name, "pages": pages}
+
+    def parse_document_docling(self, file_path: Union[str, Path]) -> str:
+        """Structured layout-aware conversion to Markdown tree graphs via Docling."""
+        path = Path(file_path)
+        if not path.exists():
+            raise MetaBrainError(f"File not found: {path}")
+
+        result = self.docling_converter.convert(str(path))
+        return result.document.export_to_markdown()
+
+```
+
+---
+
+**`src/meta_builder_brain/ingestion/web_scraper.py`**
+
+```python
+import asyncio
+from typing import Optional
+from playwright.async_api import async_playwright, Browser, Playwright
+
+from meta_builder_brain.core.exceptions import MetaBrainError
+
+
+class WebScraperPool:
+    """Manages an async Playwright headless browser instance pool for dynamic specification scraping."""
+
+    def __init__(self, pool_size: int = 3) -> None:
+        self.pool_size = pool_size
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._semaphore = asyncio.Semaphore(pool_size)
+
+    async def initialize(self) -> None:
+        if not self._playwright:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=True)
+
+    async def scrape_url(self, url: str) -> str:
+        if not self._browser:
+            await self.initialize()
+
+        async with self._semaphore:
+            context = await self._browser.new_context()
+            page = await context.new_page()
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                content = await page.content()
+                return content
+            except Exception as e:
+                raise MetaBrainError(f"Failed to scrape URL {url}: {str(e)}") from e
+            finally:
+                await page.close()
+                await context.close()
+
+    async def close(self) -> None:
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+
+```
+
+---
+
+**`src/meta_builder_brain/ingestion/schema_parser.py`**
+
+```python
+import json
+from typing import Any, Dict, Union
+import yaml
+
+from meta_builder_brain.core.types import ASTNode, ASTNodeProperty, PropertyGraph
+from meta_builder_brain.core.exceptions import MetaBrainError
+
+
+class SchemaParser:
+    """Parses OpenAPI v3 and raw JSON Schema payloads into normalized property AST graphs."""
+
+    def parse_to_ast(self, raw_schema: Union[str, Dict[str, Any]]) -> PropertyGraph:
+        if isinstance(raw_schema, str):
+            try:
+                data = json.loads(raw_schema)
+            except json.JSONDecodeError:
+                data = yaml.safe_load(raw_schema)
+        else:
+            data = raw_schema
+
+        nodes: Dict[str, ASTNode] = {}
+        schemas = data.get("components", {}).get("schemas", {}) if "openapi" in data else data.get("$defs", data.get("definitions", {}))
+
+        if not schemas and "properties" in data:
+            schemas = {data.get("title", "RootEntity"): data}
+
+        for entity_name, schema_body in schemas.items():
+            properties: Dict[str, ASTNodeProperty] = {}
+            required_fields = set(schema_body.get("required", []))
+
+            for prop_name, prop_def in schema_body.get("properties", {}).items():
+                properties[prop_name] = ASTNodeProperty(
+                    type=prop_def.get("type", "string"),
+                    required=(prop_name in required_fields),
+                    is_primary_key=(prop_name in ["id", f"{entity_name.lower()}_id"]),
+                    description=prop_def.get("description"),
+                )
+
+            nodes[entity_name] = ASTNode(
+                name=entity_name,
+                properties=properties,
+            )
+
+        return PropertyGraph(nodes=nodes, metadata={"source_version": data.get("openapi", "json-schema")})
+
+```
+
+---
+
+**`src/meta_builder_brain/validation/retry_loop.py`**
+
+```python
+from typing import Any, Dict, Callable, Awaitable
+from pydantic import ValidationError
+
+from meta_builder_brain.core.exceptions import ValidationErrorTrace, MetaBrainError
+from meta_builder_brain.validation.pydantic_models import NamespaceManifest
+
+
+class SynthesisRetryLoop:
+    """Executes automated feedback loops intercepting schema validation errors to re-prompt synthesis models."""
+
+    def __init__(self, max_retries: int = 3) -> None:
+        self.max_retries = max_retries
+
+    async def execute_with_retry(
+        self,
+        synthesis_fn: Callable[[str], Awaitable[Dict[str, Any]]],
+        initial_prompt: str,
+    ) -> NamespaceManifest:
+        current_prompt = initial_prompt
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                raw_result = await synthesis_fn(current_prompt)
+                # Strict structural validation via Pydantic model
+                validated_manifest = NamespaceManifest.model_validate(raw_result)
+                return validated_manifest
+
+            except (ValidationError, ValidationErrorTrace) as err:
+                if attempt == self.max_retries:
+                    raise ValidationErrorTrace(
+                        message=f"Synthesis retry loop exhausted after {self.max_retries} attempts.",
+                        raw_trace={"last_error": str(err)},
+                        context={"attempts": attempt}
+                    ) from err
+
+                feedback_payload = self._construct_feedback_prompt(initial_prompt, str(err), attempt)
+                current_prompt = feedback_payload
+
+        raise MetaBrainError("Unexpected exit from retry loop.")
+
+    def _construct_feedback_prompt(self, base_prompt: str, error_trace: str, attempt: int) -> str:
+        return (
+            f"{base_prompt}\n\n"
+            f"--- REPAIR INSTRUCTION (Attempt {attempt}) ---\n"
+            f"Your previous output failed validation with the following error:\n"
+            f"{error_trace}\n\n"
+            f"Correct the syntax and constraints to output ONLY a valid JSON structure."
+        )
+
+```
+User Input: As a senior engineer at Google, implement the following
+**Step 4: Synthesis Agent & Model Context Protocol Tools**
+
+* **`synthesis/mcp_server.py`**: Register MCP tools allowing external agents to query `global/` base schemas and check existing tenant manifests during generation.
+* **`synthesis/agent.py`**: Build the single-agent harness (Hermes) orchestrating two-pass generation: Pass-1 raw entity extraction and Pass-2 state machine and cross-reference validation.
+
+Gemini Design:
+
+**`src/meta_builder_brain/synthesis/mcp_server.py`**
+
+```python
+import json
+from typing import Any, Dict, List, Optional
+from mcp.server.fastmcp import FastMCP
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meta_builder_brain.compiler.store import AsyncSessionFactory, NamespaceManifestModel
+from meta_builder_brain.core.exceptions import MetaBrainError
+from meta_builder_brain.core.types import NamespaceTier
+
+# Initialize FastMCP Server instance for sub-schema bindings
+mcp_server = FastMCP(
+    name="MetaBuilderBrainMCP",
+    instructions="Provides tool primitives to query global base schemas, parent namespaces, and tenant manifests."
+)
+
+
+@mcp_server.tool()
+async def get_global_schema(entity_name: Optional[str] = None) -> Dict[str, Any]:
+    """Retrieves standard global base schema definitions across all domains or for a specific entity.
+
+    Args:
+        entity_name: Optional name of the entity (e.g., 'Account', 'ProductOrder') to inspect.
+    """
+    async with AsyncSessionFactory() as session:
+        query = select(NamespaceManifestModel).where(
+            NamespaceManifestModel.tier == NamespaceTier.GLOBAL.value
+        )
+        result = await session.execute(query)
+        manifests = result.scalars().all()
+
+        if not manifests:
+            return {"status": "empty", "message": "No global schemas found in database."}
+
+        # Combine global entities
+        global_entities: Dict[str, Any] = {}
+        for m in manifests:
+            entities = m.manifest_data.get("entities", {})
+            if entity_name:
+                if entity_name in entities:
+                    return {
+                        "namespace_id": m.id,
+                        "entity": entities[entity_name],
+                        "fsms": m.manifest_data.get("fsms", {}).get(entity_name)
+                    }
+            else:
+                global_entities.update(entities)
+
+        if entity_name:
+            return {"status": "not_found", "message": f"Entity '{entity_name}' not defined in global tier."}
+
+        return {"tier": NamespaceTier.GLOBAL.value, "entities": global_entities}
+
+
+@mcp_server.tool()
+async def get_tenant_manifest(tenant_id: str, namespace_id: str) -> Dict[str, Any]:
+    """Retrieves an existing tenant manifest by tenant ID and namespace identifier.
+
+    Args:
+        tenant_id: The tenant requesting or owning the manifest.
+        namespace_id: Target namespace identifier to inspect.
+    """
+    async with AsyncSessionFactory() as session:
+        query = select(NamespaceManifestModel).where(
+            NamespaceManifestModel.tenant_id == tenant_id,
+            NamespaceManifestModel.id == namespace_id
+        )
+        result = await session.execute(query)
+        manifest_model = result.scalar_one_or_none()
+
+        if not manifest_model:
+            return {
+                "status": "error",
+                "message": f"Manifest '{namespace_id}' for tenant '{tenant_id}' not found."
+            }
+
+        return {
+            "id": manifest_model.id,
+            "parent_id": manifest_model.parent_id,
+            "tenant_id": manifest_model.tenant_id,
+            "tier": manifest_model.tier,
+            "revision": manifest_model.revision,
+            "manifest": manifest_model.manifest_data
+        }
+
+
+@mcp_server.tool()
+async def list_available_namespaces(tenant_id: str) -> List[Dict[str, str]]:
+    """Lists available parent and ancestor namespaces (Global, Industry, and Custom) accessible to a tenant."""
+    async with AsyncSessionFactory() as session:
+        query = select(NamespaceManifestModel).where(
+            (NamespaceManifestModel.tenant_id == tenant_id) |
+            (NamespaceManifestModel.tier == NamespaceTier.GLOBAL.value)
+        )
+        result = await session.execute(query)
+        records = result.scalars().all()
+
+        return [
+            {
+                "namespace_id": r.id,
+                "parent_id": r.parent_id or "",
+                "tier": r.tier,
+                "tenant_id": r.tenant_id
+            }
+            for r in records
+        ]
+
+```
+
+---
+
+**`src/meta_builder_brain/synthesis/agent.py`**
+
+```python
+import json
+from typing import Any, Dict, Optional
+from pydantic import ValidationError
+
+from meta_builder_brain.core.exceptions import MetaBrainError, ValidationErrorTrace
+from meta_builder_brain.synthesis.llm_client import LLMClient
+from meta_builder_brain.synthesis.prompts.json_schemas import (
+    MANIFEST_EXTRACTION_JSON_SCHEMA,
+    RAW_ENTITY_EXTRACTION_SCHEMA,
+)
+from meta_builder_brain.synthesis.prompts.system_prompts import (
+    FSM_LIFECYCLE_SYSTEM_PROMPT,
+    SCHEMA_EXTRACTION_SYSTEM_PROMPT,
+)
+from meta_builder_brain.validation.opa_evaluator import OPAEvaluator
+from meta_builder_brain.validation.pydantic_models import NamespaceManifest
+from meta_builder_brain.validation.retry_loop import SynthesisRetryLoop
+
+
+class HermesSynthesisAgent:
+    """Single-agent orchestrator conducting two-pass entity extraction, state-machine binding,
+
+    and cross-reference policy validation against OPA sidecars.
+    """
+
+    def __init__(
+        self,
+        llm_client: Optional[LLMClient] = None,
+        opa_evaluator: Optional[OPAEvaluator] = None,
+        retry_loop: Optional[SynthesisRetryLoop] = None,
+    ) -> None:
+        self.llm_client = llm_client or LLMClient()
+        self.opa_evaluator = opa_evaluator or OPAEvaluator()
+        self.retry_loop = retry_loop or SynthesisRetryLoop(max_retries=3)
+
+    async def run(
+        self,
+        specification_text: str,
+        namespace_id: str,
+        tenant_id: str,
+        tier: str,
+        parent_manifest: Optional[NamespaceManifest] = None,
+    ) -> NamespaceManifest:
+        """Executes the two-pass synthesis pipeline.
+
+        Pass 1: Raw entity schema discovery and property extraction.
+        Pass 2: FSM lifecycle synthesis, parent inheritance alignment, and OPA governance check.
+        """
+        # --- PASS 1: Raw Entity Extraction ---
+        pass1_prompt = f"Extract structural entity model AST specs from standard description:\n{specification_text}"
+
+        if parent_manifest:
+            pass1_prompt += f"\n\nParent Ancestor Entities to preserve:\n{json.dumps(parent_manifest.entities, default=str)}"
+
+        raw_entities_json = await self.llm_client.generate_qwen_json(
+            prompt=pass1_prompt,
+            system_prompt=SCHEMA_EXTRACTION_SYSTEM_PROMPT,
+            response_format=RAW_ENTITY_EXTRACTION_SCHEMA,
+        )
+
+        if isinstance(raw_entities_json, str):
+            raw_entities_data = json.loads(raw_entities_json)
+        else:
+            raw_entities_data = raw_entities_json
+
+        # --- PASS 2: State Machine & Manifest Cross-Reference Validation ---
+        async def pass2_synthesis_closure(prompt_feedback: str) -> Dict[str, Any]:
+            pass2_prompt = (
+                f"Synthesize the complete Namespace Manifest combining entities and state machine lifecycles.\n"
+                f"Namespace ID: {namespace_id}\n"
+                f"Parent ID: {parent_manifest.namespace_id if parent_manifest else 'None'}\n"
+                f"Tier: {tier}\n"
+                f"Extracted Entities:\n{json.dumps(raw_entities_data, indent=2)}\n\n"
+                f"{prompt_feedback}"
+            )
+
+            response_str = await self.llm_client.generate_anthropic(
+                prompt=pass2_prompt,
+                system_prompt=f"{SCHEMA_EXTRACTION_SYSTEM_PROMPT}\n{FSM_LIFECYCLE_SYSTEM_PROMPT}",
+            )
+
+            # Clean possible markdown wrapping if returned in response text
+            cleaned_text = response_str.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]
+
+            return json.loads(cleaned_text.strip())
+
+        # Execute retry loop with strict Pydantic parsing
+        validated_manifest = await self.retry_loop.execute_with_retry(
+            synthesis_fn=pass2_synthesis_closure,
+            initial_prompt="Output full JSON object conforming strictly to NamespaceManifest schema.",
+        )
+
+        # --- Policy Sidecar Evaluation (OPA) ---
+        if parent_manifest:
+            opa_input = {
+                "context": {
+                    "child_schema": validated_manifest.model_dump(),
+                    "parent_schema": parent_manifest.model_dump(),
+                },
+                "ancestors": list(validated_manifest.entities.keys()),
+            }
+
+            # Validates immutability invariants against fsm_inheritance.rego
+            await self.opa_evaluator.evaluate_policy(
+                policy_path="fsm/inheritance",
+                input_payload=opa_input,
+            )
+
+        return validated_manifest
+
+```
+
+---
+
+User Input: As a google engineer, implement the following logic
+
+**Step 5: Namespace Resolution, Caching & Dynamic ORM Compilation**
+* **`namespace/tree_resolver.py`**: Implement PostgreSQL recursive CTE queries (`compiler/store.py`) to derive hierarchical ancestor chains (`Custom` $\rightarrow$ `Industry` $\rightarrow$ `Global`).
+* **`namespace/fallback_chain.py`**: Wire `TreeResolver` output through `validation/opa_evaluator.py` to validate lineage adherence against `fsm_inheritance.rego`.
+* **`namespace/cache_guard.py`**: Build an `asyncio.Lock`-guarded TTL memory store to cache verified `ResolutionPath` instances.
+* **`compiler/metaclass_builder.py`**: Construct custom Python metaclass factories (`type()`) that traverse verified `ResolutionPath` manifests to dynamically compile executable SQLAlchemy ORM models at runtime.
+
+Gemini Design:
+
+**`src/meta_builder_brain/namespace/tree_resolver.py`**
+
+```python
+from typing import List, Optional
+from sqlalchemy import select, literal
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meta_builder_brain.compiler.store import AsyncSessionFactory, NamespaceManifestModel
+from meta_builder_brain.core.exceptions import NamespaceCycleError, ResolutionError
+
+
+class TreeResolver:
+    """Resolves hierarchical namespace ancestor chains via PostgreSQL recursive CTE queries."""
+
+    async def resolve_lineage(
+        self, start_namespace_id: str, session: Optional[AsyncSession] = None
+    ) -> List[NamespaceManifestModel]:
+        """Executes recursive graph traversal from child namespace up to root Global tier."""
+        session_owner = session is None
+        async_session = session or AsyncSessionFactory()
+
+        try:
+            # Recursive CTE defining child-to-root resolution lineage
+            base_cte = (
+                select(
+                    NamespaceManifestModel.id,
+                    NamespaceManifestModel.parent_id,
+                    NamespaceManifestModel.tenant_id,
+                    NamespaceManifestModel.tier,
+                    NamespaceManifestModel.revision,
+                    NamespaceManifestModel.manifest_data,
+                    NamespaceManifestModel.created_at,
+                    NamespaceManifestModel.updated_at,
+                    literal(1).label("depth"),
+                )
+                .where(NamespaceManifestModel.id == start_namespace_id)
+                .cte(name="manifest_ancestors", recursive=True)
+            )
+
+            parent_alias = NamespaceManifestModel
+            recursive_cte = select(
+                parent_alias.id,
+                parent_alias.parent_id,
+                parent_alias.tenant_id,
+                parent_alias.tier,
+                parent_alias.revision,
+                parent_alias.manifest_data,
+                parent_alias.created_at,
+                parent_alias.updated_at,
+                (base_cte.c.depth + 1).label("depth"),
+            ).join(base_cte, parent_alias.id == base_cte.c.parent_id)
+
+            ancestor_chain = base_cte.union_all(recursive_cte)
+            stmt = select(ancestor_chain).order_by(ancestor_chain.c.depth.asc())
+
+            if session_owner:
+                async with async_session as active_session:
+                    result = await active_session.execute(stmt)
+                    rows = result.all()
+            else:
+                result = await async_session.execute(stmt)
+                rows = result.all()
+
+            if not rows:
+                raise ResolutionError(
+                    f"Namespace target '{start_namespace_id}' could not be resolved in persistent hierarchy."
+                )
+
+            # Cycle detection and max depth safeguard
+            visited_ids = set()
+            lineage_models: List[NamespaceManifestModel] = []
+
+            for row in rows:
+                if row.id in visited_ids:
+                    raise NamespaceCycleError(
+                        f"Cyclical inheritance detected in namespace resolution tree at node '{row.id}'"
+                    )
+                visited_ids.add(row.id)
+
+                lineage_models.append(
+                    NamespaceManifestModel(
+                        id=row.id,
+                        parent_id=row.parent_id,
+                        tenant_id=row.tenant_id,
+                        tier=row.tier,
+                        revision=row.revision,
+                        manifest_data=row.manifest_data,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                    )
+                )
+
+            return lineage_models
+
+        finally:
+            if session_owner and async_session:
+                await async_session.close()
+
+    async def get_manifests_by_ids(
+        self, namespace_ids: List[str], session: Optional[AsyncSession] = None
+    ) -> List[NamespaceManifestModel]:
+        """Bulk retrieves explicit namespace manifest models preserved in specified sequence."""
+        session_owner = session is None
+        async_session = session or AsyncSessionFactory()
+
+        try:
+            stmt = select(NamespaceManifestModel).where(NamespaceManifestModel.id.in_(namespace_ids))
+
+            if session_owner:
+                async with async_session as active_session:
+                    result = await active_session.execute(stmt)
+                    records = {m.id: m for m in result.scalars().all()}
+            else:
+                result = await async_session.execute(stmt)
+                records = {m.id: m for m in result.scalars().all()}
+
+            ordered_manifests = [records[nid] for nid in namespace_ids if nid in records]
+            return ordered_manifests
+
+        finally:
+            if session_owner and async_session:
+                await async_session.close()
+
+```
+
+---
+
+**`src/meta_builder_brain/namespace/cache_guard.py`**
+
+```python
+import asyncio
+import time
+from typing import Dict, Optional, Tuple
+
+from meta_builder_brain.config.settings import settings
+from meta_builder_brain.core.types import ResolutionContext, ResolutionPath
+
+
+class CacheGuard:
+    """Thread-safe, asyncio.Lock-guarded in-memory TTL cache for verified ResolutionPath models."""
+
+    def __init__(self, ttl_seconds: int = settings.CACHE_TTL_SECONDS) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._cache: Dict[str, Tuple[ResolutionPath, float]] = {}
+        self._lock = asyncio.Lock()
+
+    def _build_key(self, context: ResolutionContext) -> str:
+        return f"{context.tenant_id}:{context.industry_domain}:{context.custom_namespace or ''}"
+
+    async def get(self, context: ResolutionContext) -> Optional[ResolutionPath]:
+        """Retrieves non-expired resolution paths from memory cache."""
+        key = self._build_key(context)
+        async with self._lock:
+            if key in self._cache:
+                path, timestamp = self._cache[key]
+                if time.time() - timestamp < self.ttl_seconds:
+                    return path.model_copy(update={"is_cached": True})
+                # Evict expired entry
+                del self._cache[key]
+        return None
+
+    async def set(self, context: ResolutionContext, path: ResolutionPath) -> None:
+        """Stores verified resolution path with current timestamp mark."""
+        key = self._build_key(context)
+        async with self._lock:
+            self._cache[key] = (path, time.time())
+
+    async def invalidate(self, context: ResolutionContext) -> None:
+        """Evicts a target context key from the cache store."""
+        key = self._build_key(context)
+        async with self._lock:
+            self._cache.pop(key, None)
+
+    async def clear(self) -> None:
+        """Flushes all entries from memory cache."""
+        async with self._lock:
+            self._cache.clear()
+
+```
+
+---
+
+**`src/meta_builder_brain/namespace/fallback_chain.py`**
+
+```python
+from typing import List, Optional, Tuple
+
+from meta_builder_brain.compiler.store import NamespaceManifestModel
+from meta_builder_brain.core.exceptions import ResolutionError
+from meta_builder_brain.core.types import NamespaceTier, ResolutionContext, ResolutionPath
+from meta_builder_brain.namespace.cache_guard import CacheGuard
+from meta_builder_brain.namespace.tree_resolver import TreeResolver
+from meta_builder_brain.validation.opa_evaluator import OPAEvaluator
+
+
+class FallbackChainResolver:
+    """Orchestrates lineage resolution across cache guards, recursive DB resolvers, and OPA policy sidecars."""
+
+    def __init__(
+        self,
+        tree_resolver: Optional[TreeResolver] = None,
+        cache_guard: Optional[CacheGuard] = None,
+        opa_evaluator: Optional[OPAEvaluator] = None,
+    ) -> None:
+        self.tree_resolver = tree_resolver or TreeResolver()
+        self.cache_guard = cache_guard or CacheGuard()
+        self.opa_evaluator = opa_evaluator or OPAEvaluator()
+
+    async def resolve_and_validate(
+        self, context: ResolutionContext, target_namespace_id: str
+    ) -> Tuple[ResolutionPath, List[NamespaceManifestModel]]:
+        """Resolves ancestor lineage, validates pairwise FSM/PK inheritance with OPA, and caches outcome."""
+        # 1. Attempt cached path hit
+        cached_path = await self.cache_guard.get(context)
+        if cached_path:
+            lineage_models = await self.tree_resolver.get_manifests_by_ids(cached_path.path)
+            return cached_path, lineage_models
+
+        # 2. Execute DB recursive CTE tree resolution
+        lineage = await self.tree_resolver.resolve_lineage(target_namespace_id)
+        if not lineage:
+            raise ResolutionError(f"Namespace hierarchy resolution yielded empty set for '{target_namespace_id}'")
+
+        # 3. Stepwise pairwise validation along ancestor chain (Child -> Parent)
+        for i in range(len(lineage) - 1):
+            child_manifest = lineage[i]
+            parent_manifest = lineage[i + 1]
+
+            opa_payload = {
+                "context": {
+                    "child_schema": child_manifest.manifest_data,
+                    "parent_schema": parent_manifest.manifest_data,
+                },
+                "ancestors": list(child_manifest.manifest_data.get("entities", {}).keys()),
+            }
+
+            # Enforce immutable PK and FSM invariant policies via Rego
+            await self.opa_evaluator.evaluate_policy(
+                policy_path="fsm/inheritance", input_payload=opa_payload
+            )
+
+        # 4. Construct verified resolution path outcome
+        path_ids = [m.id for m in lineage]
+        effective_tier = NamespaceTier(lineage[0].tier)
+
+        resolution_path = ResolutionPath(
+            path=path_ids,
+            tenant_id=context.tenant_id,
+            effective_tier=effective_tier,
+            is_cached=False,
+        )
+
+        # 5. Populate CacheGuard memory store
+        await self.cache_guard.set(context, resolution_path)
+
+        return resolution_path, lineage
+
+```
+
+---
+
+**`src/meta_builder_brain/compiler/metaclass_builder.py`**
+
+```python
+from typing import Any, Dict, List, Type
+from sqlalchemy import Column, Float, Integer, String, Boolean, DateTime, JSON
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import DeclarativeBase
+
+from meta_builder_brain.compiler.store import Base, NamespaceManifestModel
+from meta_builder_brain.validation.pydantic_models import AttributeType
+
+# Mapping runtime attribute definitions to SQLAlchemy column types
+TYPE_MAP = {
+    AttributeType.STRING.value: String,
+    AttributeType.INTEGER.value: Integer,
+    AttributeType.FLOAT.value: Float,
+    AttributeType.BOOLEAN.value: Boolean,
+    AttributeType.DATETIME.value: DateTime(timezone=True),
+    AttributeType.UUID.value: PG_UUID(as_uuid=True),
+    AttributeType.JSON.value: JSON,
+}
+
+
+class DynamicMetaclassBuilder:
+    """Constructs executable SQLAlchemy ORM model classes dynamically via type() metaclass factories."""
+
+    def __init__(self, base_class: Type[DeclarativeBase] = Base) -> None:
+        self.base_class = base_class
+        self._compiled_registry: Dict[str, Type[DeclarativeBase]] = {}
+
+    def compile_orm_models(
+        self, lineage_manifests: List[NamespaceManifestModel]
+    ) -> Dict[str, Type[DeclarativeBase]]:
+        """Traverses lineage manifests from Root (Global) down to Custom overrides,
+
+        merging entity schemas and dynamically instantiating ORM classes.
+        """
+        # Process in reverse sequence: Root (Global) -> Ancestors -> Child (Custom overlay)
+        ordered_manifests = list(reversed(lineage_manifests))
+        merged_entities: Dict[str, Dict[str, Any]] = {}
+
+        for manifest_model in ordered_manifests:
+            entities = manifest_model.manifest_data.get("entities", {})
+
+            for entity_name, entity_def in entities.items():
+                if entity_name not in merged_entities:
+                    merged_entities[entity_name] = {
+                        "primary_key": entity_def.get("primary_key"),
+                        "attributes": {},
+                    }
+
+                # Overlay attributes from specific child extensions
+                merged_entities[entity_name]["attributes"].update(
+                    entity_def.get("attributes", {})
+                )
+
+        compiled_models: Dict[str, Type[DeclarativeBase]] = {}
+
+        for entity_name, entity_spec in merged_entities.items():
+            class_name = f"Dynamic_{entity_name}"
+            table_name = f"dynamic_{entity_name.lower()}"
+
+            # Check dynamic registry cache
+            if class_name in self._compiled_registry:
+                compiled_models[entity_name] = self._compiled_registry[class_name]
+                continue
+
+            class_dict: Dict[str, Any] = {
+                "__tablename__": table_name,
+                "__module__": "meta_builder_brain.compiler.dynamic",
+            }
+
+            pk_field = entity_spec.get("primary_key")
+            attributes = entity_spec.get("attributes", {})
+
+            for attr_name, attr_def in attributes.items():
+                data_type_str = attr_def.get("data_type", "string")
+                sa_type = TYPE_MAP.get(data_type_str, String)
+
+                is_pk = (attr_name == pk_field) or attr_def.get("primary_key", False)
+                nullable = attr_def.get("nullable", True) if not is_pk else False
+
+                class_dict[attr_name] = Column(
+                    sa_type,
+                    primary_key=is_pk,
+                    nullable=nullable,
+                    default=attr_def.get("default_value"),
+                )
+
+            # Dynamic type() metaclass allocation
+            orm_class = type(class_name, (self.base_class,), class_dict)
+            self._compiled_registry[class_name] = orm_class
+            compiled_models[entity_name] = orm_class
+
+        return compiled_models
+
+```
+---
+
+User Input:  As a google engineer, implement the following code
+
+**Step 6: Ingestion Gateway & Application Runtime**
+* **`ingestion/router.py`**: Implement FastAPI REST endpoints and webhook receivers for RFC payloads, OpenAPI URLs, and raw schema submissions.
+* **`main.py`**: Bind application lifespans, initialize DB pool connections, wire `ingestion/router.py`, and launch background event processing workers.
+**`src/meta_builder_brain/ingestion/router.py`**
+
+```python
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from meta_builder_brain.compiler.metaclass_builder import DynamicMetaclassBuilder
+from meta_builder_brain.compiler.store import NamespaceManifestModel, get_async_session
+from meta_builder_brain.core.exceptions import MetaBrainError, ResolutionError, ValidationErrorTrace
+from meta_builder_brain.core.types import NamespaceTier, ResolutionContext
+from meta_builder_brain.ingestion.schema_parser import SchemaParser
+from meta_builder_brain.ingestion.web_scraper import WebScraperPool
+from meta_builder_brain.namespace.fallback_chain import FallbackChainResolver
+from meta_builder_brain.namespace.tree_resolver import TreeResolver
+from meta_builder_brain.synthesis.agent import HermesSynthesisAgent
+from meta_builder_brain.validation.pydantic_models import NamespaceManifest
+
+router = APIRouter(prefix="/gateway", tags=["Ingestion & Compilation Gateway"])
+
+
+# --- Request & Response DTOs ---
+
+class RawSchemaIngestRequest(BaseModel):
+    namespace_id: str = Field(..., description="Target namespace ID")
+    tenant_id: str = Field(..., description="Target tenant ID")
+    tier: NamespaceTier = Field(..., description="Namespace tier (global, industry, custom)")
+    parent_id: Optional[str] = Field(None, description="Parent ancestor namespace ID")
+    raw_payload: Dict[str, Any] = Field(..., description="Raw JSON Schema or OpenAPI AST payload")
+
+
+class OpenAPIIngestRequest(BaseModel):
+    namespace_id: str
+    tenant_id: str
+    tier: NamespaceTier
+    parent_id: Optional[str] = None
+    openapi_url: str = Field(..., description="Remote OpenAPI specification URL to fetch and scrape")
+
+
+class RFCSpecIngestRequest(BaseModel):
+    namespace_id: str
+    tenant_id: str
+    tier: NamespaceTier
+    industry_domain: str = Field(..., description="Target industry vertical")
+    parent_id: Optional[str] = None
+    specification_text: str = Field(..., description="Unstructured spec text or Markdown content")
+
+
+class CompilationResponse(BaseModel):
+    namespace_id: str
+    tenant_id: str
+    effective_tier: str
+    resolution_path: List[str]
+    compiled_tables: List[str]
+
+
+# --- Gateway Endpoints ---
+
+@router.post("/ingest/raw", status_code=status.HTTP_201_CREATED)
+async def ingest_raw_schema(
+    payload: RawSchemaIngestRequest,
+    db: AsyncSession = Depends(get_async_session)
+) -> Dict[str, Any]:
+    """Parses raw OpenAPI/JSON schemas, normalizes property trees, and saves namespace manifest."""
+    try:
+        schema_parser = SchemaParser()
+        property_graph = schema_parser.parse_to_ast(payload.raw_payload)
+
+        # Construct candidate manifest data
+        manifest_data = {
+            "namespace_id": payload.namespace_id,
+            "parent_id": payload.parent_id,
+            "tier": payload.tier.value,
+            "version": 1,
+            "entities": {
+                name: {
+                    "name": node.name,
+                    "primary_key": next((k for k, v in node.properties.items() if v.is_primary_key), "id"),
+                    "attributes": {
+                        k: {"name": k, "data_type": v.type, "primary_key": v.is_primary_key, "nullable": not v.required}
+                        for k, v in node.properties.items()
+                    },
+                    "relationships": {}
+                }
+                for name, node in property_graph.nodes.items()
+            },
+            "fsms": {}
+        }
+
+        manifest = NamespaceManifest.model_validate(manifest_data)
+
+        # Persist to database
+        db_model = NamespaceManifestModel(
+            id=manifest.namespace_id,
+            parent_id=manifest.parent_id,
+            tenant_id=payload.tenant_id,
+            tier=manifest.tier,
+            revision=manifest.version,
+            manifest_data=manifest.model_dump()
+        )
+        db.add(db_model)
+        await db.commit()
+
+        return {"status": "success", "namespace_id": manifest.namespace_id, "entities_count": len(manifest.entities)}
+
+    except (ValidationErrorTrace, MetaBrainError) as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+
+@router.post("/ingest/openapi", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_openapi_url(
+    payload: OpenAPIIngestRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_async_session)
+) -> Dict[str, str]:
+    """Scrapes external OpenAPI URLs asynchronously via headless Playwright browser pool."""
+    scraper = WebScraperPool()
+
+    async def _async_scrape_job() -> None:
+        try:
+            await scraper.initialize()
+            content = await scraper.scrape_url(payload.openapi_url)
+            parser = SchemaParser()
+            ast_graph = parser.parse_to_ast(content)
+            # Pipeline execution logic for AST nodes stored in DB
+        finally:
+            await scraper.close()
+
+    background_tasks.add_task(_async_scrape_job)
+    return {"status": "queued", "message": f"Scraping dynamic schema task scheduled for {payload.openapi_url}"}
+
+
+@router.post("/ingest/rfc", status_code=status.HTTP_200_OK)
+async def ingest_rfc_specification(
+    payload: RFCSpecIngestRequest,
+    db: AsyncSession = Depends(get_async_session)
+) -> Dict[str, Any]:
+    """Runs Pass-1 & Pass-2 Hermes Synthesis Agent to construct manifest from raw RFC text."""
+    try:
+        tree_resolver = TreeResolver()
+        parent_manifest = None
+
+        if payload.parent_id:
+            ancestors = await tree_resolver.resolve_lineage(payload.parent_id, session=db)
+            if ancestors:
+                parent_manifest = NamespaceManifest.model_validate(ancestors[0].manifest_data)
+
+        agent = HermesSynthesisAgent()
+        manifest = await agent.run(
+            specification_text=payload.specification_text,
+            namespace_id=payload.namespace_id,
+            tenant_id=payload.tenant_id,
+            tier=payload.tier.value,
+            parent_manifest=parent_manifest
+        )
+
+        db_model = NamespaceManifestModel(
+            id=manifest.namespace_id,
+            parent_id=manifest.parent_id,
+            tenant_id=payload.tenant_id,
+            tier=manifest.tier,
+            revision=manifest.version,
+            manifest_data=manifest.model_dump()
+        )
+        db.add(db_model)
+        await db.commit()
+
+        return {"status": "synthesized", "manifest": manifest.model_dump()}
+
+    except (ValidationErrorTrace, MetaBrainError) as err:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(err))
+
+
+@router.post("/compile/{namespace_id}", response_model=CompilationResponse)
+async def compile_namespace(
+    namespace_id: str,
+    tenant_id: str,
+    industry_domain: str,
+    db: AsyncSession = Depends(get_async_session)
+) -> CompilationResponse:
+    """Executes resolution fallback chain and metaclass ORM compiler for a target namespace."""
+    try:
+        context = ResolutionContext(
+            tenant_id=tenant_id,
+            industry_domain=industry_domain,
+            custom_namespace=namespace_id
+        )
+
+        fallback_chain = FallbackChainResolver()
+        res_path, lineage_models = await fallback_chain.resolve_and_validate(
+            context=context,
+            target_namespace_id=namespace_id
+        )
+
+        builder = DynamicMetaclassBuilder()
+        compiled_orm_models = builder.compile_orm_models(lineage_models)
+
+        table_names = [model.__tablename__ for model in compiled_orm_models.values()]
+
+        return CompilationResponse(
+            namespace_id=namespace_id,
+            tenant_id=tenant_id,
+            effective_tier=res_path.effective_tier.value,
+            resolution_path=res_path.path,
+            compiled_tables=table_names
+        )
+
+    except ResolutionError as err:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+    except MetaBrainError as err:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(err))
+
+
+```
+
+---
+
+**`src/meta_builder_brain/main.py`**
+
+```python
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from meta_builder_brain.config.settings import settings
+from meta_builder_brain.compiler.store import engine, init_db
+from meta_builder_brain.ingestion.router import router as ingestion_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application lifespan context manager initializing secrets, DB pools, and background infrastructure."""
+    # System Startup
+    await settings.load_secrets_from_openbao()
+    await init_db()
+
+    yield
+
+    # System Shutdown
+    await engine.dispose()
+
+
+app = FastAPI(
+    title="Meta-Builder Brain Runtime System",
+    description="Isolates ingestion pipelines, LLM synthesis workflows, policy guardrails, and dynamic schema compilation.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware alignment
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Route mounting
+app.include_router(ingestion_router, prefix="/api/v1")
+
+
+@app.get("/health", tags=["System"])
+async def health_check() -> dict[str, str]:
+    return {
+        "status": "online",
+        "environment": settings.ENV,
+        "database_url": settings.DATABASE_URL.split("@")[-1],  # Sanitized DB host info
+        "opa_sidecar": settings.OPA_URL,
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "meta_builder_brain.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True if settings.ENV == "development" else False,
+        log_level=settings.LOG_LEVEL.lower(),
+    )
+
+
+```

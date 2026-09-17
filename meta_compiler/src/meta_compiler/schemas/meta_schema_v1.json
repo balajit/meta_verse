@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meta-builder.internal/schemas/meta_schema_v1.json",
+  "title": "WorkflowManifestMetaSchemaV1",
+  "description": "Static structural rules for Meta-Builder workflow manifests.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": ["string", "integer"],
+      "pattern": "^(v[0-9]+(\\.[0-9]+)*|[0-9]+)$"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "namespace_id": {
+      "type": "string"
+    },
+    "parent_id": {
+      "type": ["string", "null"]
+    },
+    "tier": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "resolution_path": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "effective_tier": {
+      "type": "string"
+    },
+    "custom_types_module": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "entities": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/EntityModel"
+      }
+    },
+    "fsms": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/FSMModel"
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/TaskNode"
+      }
+    }
+  },
+  "$defs": {
+    "AttributeModel": {
+      "type": "object",
+      "required": ["data_type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": ["string", "null"]
+        },
+        "data_type": {
+          "type": "string",
+          "enum": ["string", "integer", "float", "boolean", "datetime", "uuid", "json"]
+        },
+        "primary_key": {
+          "type": "boolean",
+          "default": false
+        },
+        "nullable": {
+          "type": "boolean",
+          "default": true
+        },
+        "default_value": {}
+      }
+    },
+    "EntityModel": {
+      "type": "object",
+      "required": ["name", "primary_key", "attributes"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "primary_key": {
+          "type": "string"
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AttributeModel"
+          }
+        },
+        "relationships": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TransitionModel": {
+      "type": "object",
+      "required": ["from_state", "to_state", "trigger_event"],
+      "additionalProperties": false,
+      "properties": {
+        "from_state": {
+          "type": "string"
+        },
+        "to_state": {
+          "type": "string"
+        },
+        "trigger_event": {
+          "type": "string"
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "FSMModel": {
+      "type": "object",
+      "required": ["entity_name", "initial_state", "states", "transitions"],
+      "additionalProperties": false,
+      "properties": {
+        "entity_name": {
+          "type": "string"
+        },
+        "initial_state": {
+          "type": "string"
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "immutable_states": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransitionModel"
+          }
+        }
+      }
+    },
+    "ArtifactSource": {
+      "type": "object",
+      "required": ["task_id", "artifact_name"],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "artifact_name": {
+          "type": "string"
+        }
+      }
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        },
+        "schema_def": {
+          "type": "object"
+        },
+        "source": {
+          "$ref": "#/$defs/ArtifactSource"
+        }
+      }
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
+        "backoff_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0
+        }
+      }
+    },
+    "TaskNode": {
+      "type": "object",
+      "required": ["id", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "action": {
+          "type": "string"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "timeout": {
+          "type": "number"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/RetryPolicy"
+        }
+      }
+    }
+  }
+}

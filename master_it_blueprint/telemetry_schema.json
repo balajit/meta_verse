@@ -1,0 +1,425 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://learning-platform.example.com/schemas/telemetry-analytics-domain.json",
+  "title": "Telemetry and Analytics Data Domain Model",
+  "description": "Reusable JSON Schema definitions for authentication event logs, engagement heartbeats, content interaction events, and learning progress snapshots within an educational platform.",
+  "$defs": {
+    "AuthenticationEventLog": {
+      "type": "object",
+      "title": "Authentication Event Log",
+      "description": "Structured audit entry capturing an authentication-related event such as a login, logout, token refresh, or OAuth handshake.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for this authentication event log entry."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the user associated with the authentication event."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the session associated with the authentication event, when a session applies."
+        },
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "login",
+            "logout",
+            "token_refresh",
+            "oauth_handshake"
+          ],
+          "description": "Classification of the authentication event."
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the authentication event occurred."
+        },
+        "oauthDetails": {
+          "$ref": "#/$defs/OAuthHandshakeDetails",
+          "description": "Additional metadata for an authentication event that involves an OAuth handshake."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "eventType",
+        "occurredAt"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "eventType": {
+                "const": "oauth_handshake"
+              }
+            },
+            "required": [
+              "eventType"
+            ]
+          },
+          "then": {
+            "required": [
+              "oauthDetails"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "oauthDetails"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "OAuthHandshakeDetails": {
+      "type": "object",
+      "title": "OAuth Handshake Details",
+      "description": "Value object containing metadata specific to an OAuth authentication handshake.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identity provider or OAuth service involved in the handshake."
+        },
+        "grantType": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OAuth grant type used during the handshake."
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "OAuth scopes associated with the handshake."
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "EngagementHeartbeat": {
+      "type": "object",
+      "title": "Engagement Heartbeat",
+      "description": "High-frequency telemetry event measuring active duration, idle time, and interaction state within the learning interface.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for this engagement heartbeat event."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learner associated with the heartbeat."
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learning session during which the heartbeat was recorded."
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the heartbeat was recorded."
+        },
+        "activeDurationSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Duration of active engagement represented by the heartbeat, expressed in seconds."
+        },
+        "idleDurationSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Duration of idle time represented by the heartbeat, expressed in seconds."
+        },
+        "interactionState": {
+          "type": "string",
+          "enum": [
+            "active",
+            "idle",
+            "focused",
+            "blurred"
+          ],
+          "description": "Current interaction state of the learning interface at the time of the heartbeat."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "sessionId",
+        "occurredAt",
+        "activeDurationSeconds",
+        "idleDurationSeconds",
+        "interactionState"
+      ],
+      "additionalProperties": false
+    },
+    "ContentInteractionEvent": {
+      "type": "object",
+      "title": "Content Interaction Event",
+      "description": "Specific activity log recording interaction with learning content, including video playback, media seeking, document scrolling, or resource downloading.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for this content interaction event."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learner performing the interaction."
+        },
+        "contentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learning content or resource involved in the interaction."
+        },
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "video_play",
+            "video_pause",
+            "media_seek",
+            "document_scroll",
+            "resource_download"
+          ],
+          "description": "Classification of the content interaction."
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the content interaction occurred."
+        },
+        "mediaPosition": {
+          "$ref": "#/$defs/MediaPosition",
+          "description": "Media playhead position associated with a video or media playback interaction, when applicable."
+        },
+        "documentScroll": {
+          "$ref": "#/$defs/DocumentScrollMetrics",
+          "description": "Document scrolling information associated with a document interaction, when applicable."
+        },
+        "downloadDetails": {
+          "$ref": "#/$defs/ResourceDownloadDetails",
+          "description": "Details associated with a resource download interaction, when applicable."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "contentId",
+        "eventType",
+        "occurredAt"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "eventType": {
+                "enum": [
+                  "video_play",
+                  "video_pause",
+                  "media_seek"
+                ]
+              }
+            },
+            "required": [
+              "eventType"
+            ]
+          },
+          "then": {
+            "required": [
+              "mediaPosition"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "mediaPosition"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "eventType": {
+                "const": "document_scroll"
+              }
+            },
+            "required": [
+              "eventType"
+            ]
+          },
+          "then": {
+            "required": [
+              "documentScroll"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "documentScroll"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "eventType": {
+                "const": "resource_download"
+              }
+            },
+            "required": [
+              "eventType"
+            ]
+          },
+          "then": {
+            "required": [
+              "downloadDetails"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "downloadDetails"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "MediaPosition": {
+      "type": "object",
+      "title": "Media Position",
+      "description": "Value object representing media playhead positions associated with a playback or seeking interaction.",
+      "properties": {
+        "currentPositionSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Current media playhead position at the time of the interaction, expressed in seconds."
+        },
+        "previousPositionSeconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Previous media playhead position before a seeking interaction, expressed in seconds, when applicable."
+        }
+      },
+      "required": [
+        "currentPositionSeconds"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentScrollMetrics": {
+      "type": "object",
+      "title": "Document Scroll Metrics",
+      "description": "Value object recording scrolling progression within a document.",
+      "properties": {
+        "scrollPercentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of the document represented as viewed or scrolled past, expressed from 0 to 100."
+        },
+        "pageNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Current document page associated with the scroll interaction, when applicable."
+        }
+      },
+      "required": [
+        "scrollPercentage"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceDownloadDetails": {
+      "type": "object",
+      "title": "Resource Download Details",
+      "description": "Value object containing information about a learning resource that was downloaded.",
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the downloaded resource file, when available."
+        },
+        "fileFormat": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Format or extension of the downloaded resource, when available."
+        }
+      },
+      "additionalProperties": false
+    },
+    "LearningProgressSnapshot": {
+      "type": "object",
+      "title": "Learning Progress Snapshot",
+      "description": "Aggregated snapshot of learning progress computed periodically or on demand, including completion, learning streak, and predicted completion information when those metrics are represented.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for this learning progress snapshot."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learner whose progress is summarized."
+        },
+        "contextId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the learning scope to which the snapshot applies, such as a course, module, or broader learning context."
+        },
+        "snapshotType": {
+          "type": "string",
+          "enum": [
+            "periodic",
+            "on_demand"
+          ],
+          "description": "Indicates whether the snapshot was generated periodically or computed on demand."
+        },
+        "computedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the progress snapshot was computed."
+        },
+        "percentageComplete": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of the applicable learning activity represented as completed, expressed from 0 to 100."
+        },
+        "currentStreak": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Current consecutive learning streak represented by the snapshot, expressed as a non-negative count."
+        },
+        "predictedCompletionDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Predicted calendar date on which the applicable learning activity is expected to be completed, when a prediction is available."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "contextId",
+        "snapshotType",
+        "computedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

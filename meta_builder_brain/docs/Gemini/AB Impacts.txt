@@ -1,0 +1,97 @@
+To implement the persistence architecture migration and lineage traversal refactoring without breaking component contracts, file changes must be executed in a strict order based on their module dependencies.
+
+### Dependency Order & Execution Sequence
+
+```
+1. Persistence Layer Core
+   └── /meta_builder_brain/src/meta_builder_brain/compiler/store.py
+       │
+       ├──> 2. Graph & Lineage Traversal
+       │    └── /meta_builder_brain/src/meta_builder_brain/namespace/tree_resolver.py
+       │        │
+       │        ├──> 3. Stepwise Policy Engine
+       │        │    └── /meta_builder_brain/src/meta_builder_brain/namespace/fallback_chain.py
+       │        │
+       │        └──> 4. Dynamic ORM Compilation Core
+       │             └── /meta_builder_brain/src/meta_builder_brain/compiler/metaclass_builder.py
+       │
+       ├──> 5. Ingestion Gateway & Endpoints
+       │    └── /meta_builder_brain/src/meta_builder_brain/ingestion/router.py
+       │
+       └──> 6. External MCP Synthesis Interface
+            └── /meta_builder_brain/src/meta_builder_brain/synthesis/mcp_server.py
+
+```
+
+---
+
+### Step-by-Step Change Plan
+
+1. **`/meta_builder_brain/src/meta_builder_brain/compiler/store.py`**
+* **Dependency Position**: Phase 1 (Foundation)
+
+
+* **Change**: Remove legacy `NamespaceManifestModel` and `SchemaRevisionModel` ORM classes. Declare standard runtime ORM models: `SpecificationsRegistry`, `BuildJobAudit`, `BuildJobEvents`, and `ArtifactManifests`.
+
+
+* **Reason**: All downstream packages (`namespace`, `compiler`, `ingestion`, and `synthesis`) import ORM models from this module. Updating `store.py` first establishes the schema types required by dependent layers.
+
+
+
+
+2. **`/meta_builder_brain/src/meta_builder_brain/namespace/tree_resolver.py`**
+* **Dependency Position**: Phase 2 (Data Access Layer)
+
+
+* **Change**: Replace legacy recursive CTE queries targeting `namespace_manifests` with queries targeting `dag_lineage_closure` and `specifications_registry`. Update return types to utilize standard specification entities.
+
+
+* **Reason**: The `TreeResolver` relies on `store.py` models. Refactoring it to evaluate graph closures ($O(V + E)$ complexity) provides high-performance lineage lookups to fallback resolvers and metaclass builders.
+
+
+
+
+3. **`/meta_builder_brain/src/meta_builder_brain/namespace/fallback_chain.py`**
+* **Dependency Position**: Phase 3 (Business Logic & Governance)
+
+
+* **Change**: Update imports to reference `SpecificationsRegistry` instead of `NamespaceManifestModel`. Align pairwise Rego policy input generation with the updated specification schema.
+
+
+* **Reason**: `FallbackChainResolver` consumes `TreeResolver` and `store.py` models to perform stepwise lineage policy evaluations prior to AST compilation.
+
+
+
+
+4. **`/meta_builder_brain/src/meta_builder_brain/compiler/metaclass_builder.py`**
+* **Dependency Position**: Phase 4 (Code Generation Core)
+
+
+* **Change**: Update `compile_orm_models` signatures and type annotations to accept specification registry instances instead of `NamespaceManifestModel`. Integrate direct calls to query `dag_lineage_closure` during entity field inheritance merging.
+
+
+* **Reason**: Synthesizes in-memory SQLAlchemy classes using data structures provided by `store.py` and resolved by `tree_resolver.py`.
+
+
+
+
+5. **`/meta_builder_brain/src/meta_builder_brain/ingestion/router.py`**
+* **Dependency Position**: Phase 5 (API Gateway Layer)
+
+
+* **Change**: Replace instantiations of `NamespaceManifestModel` in `/ingest/raw` and `/ingest/rfc` endpoints with writes to `specifications_registry` and `build_job_audit` tables. Update `/compile/{namespace_id}` endpoint handlers to invoke the refactored dynamic metaclass compilation pipeline.
+
+
+* **Reason**: The REST API layer coordinates ingest operations and triggers compilation workflows using all underlying models and services.
+
+
+
+
+6. **`/meta_builder_brain/src/meta_builder_brain/synthesis/mcp_server.py`**
+* **Dependency Position**: Phase 6 (External Service Adapter)
+
+
+* **Change**: Rebind MCP server tool functions (`get_global_schema`, `get_tenant_manifest`, and `list_available_namespaces`) to execute select queries against `specifications_registry` and `artifact_manifests` instead of `NamespaceManifestModel`.
+
+
+* **Reason**: Re-establishes tool capabilities for external agents once internal storage structures have been migrated.

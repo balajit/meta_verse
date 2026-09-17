@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://learning-platform.example.com/schemas/user-identity-domain.json",
+  "title": "User and Identity Domain Model",
+  "description": "Reusable JSON Schema definitions for student profiles, instructors or educators, linked Google SSO identities, preferences, communication settings, and user security sessions.",
+  "$defs": {
+    "StudentProfile": {
+      "type": "object",
+      "title": "Student Profile",
+      "description": "Primary domain entity capturing student identity, linked Google SSO provider credentials, preferences, timezone, and communication settings.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the student profile."
+        },
+        "identity": {
+          "$ref": "#/$defs/StudentIdentity",
+          "description": "Identity information associated with the student profile."
+        },
+        "googleSsoCredentials": {
+          "$ref": "#/$defs/GoogleSsoCredentials",
+          "description": "Linked Google Single Sign-On identity associated with the student profile."
+        },
+        "preferences": {
+          "$ref": "#/$defs/StudentPreferences",
+          "description": "Preferences associated with the student's experience."
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Timezone associated with the student's profile."
+        },
+        "communicationSettings": {
+          "$ref": "#/$defs/CommunicationSettings",
+          "description": "Settings governing communication with the student."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "StudentIdentity": {
+      "type": "object",
+      "title": "Student Identity",
+      "description": "Identity information representing the student.",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address representing the student's identity."
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name by which the student is identified."
+        }
+      },
+      "additionalProperties": false
+    },
+    "GoogleSsoCredentials": {
+      "type": "object",
+      "title": "Google SSO Credentials",
+      "description": "Information linking the student profile to a Google Single Sign-On identity.",
+      "properties": {
+        "provider": {
+          "const": "google",
+          "description": "Identity provider associated with the linked Single Sign-On identity."
+        },
+        "providerSubject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Subject identifier assigned by Google to the linked identity."
+        },
+        "linkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the Google identity was linked to the student profile."
+        }
+      },
+      "required": [
+        "provider",
+        "providerSubject"
+      ],
+      "additionalProperties": false
+    },
+    "StudentPreferences": {
+      "type": "object",
+      "title": "Student Preferences",
+      "description": "Preferences associated with the student's experience.",
+      "properties": {
+        "preferredLanguage": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Preferred language for the student's experience."
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommunicationSettings": {
+      "type": "object",
+      "title": "Communication Settings",
+      "description": "Settings governing communication with the student.",
+      "properties": {
+        "emailNotificationsEnabled": {
+          "type": "boolean",
+          "description": "Indicates whether email communications are enabled for the student."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Instructor": {
+      "type": "object",
+      "title": "Instructor / Educator",
+      "description": "Domain entity representing a content creator or instructor assigned to manage or deliver specific courses.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the instructor or educator."
+        },
+        "assignedCourseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Identifiers referencing courses assigned to the instructor for management or delivery."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "UserSession": {
+      "type": "object",
+      "title": "User Session",
+      "description": "Active or historical security session tracking authentication method, IP address, device fingerprint, and authorization tokens.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier for the user session."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier referencing the identity associated with the security session."
+        },
+        "authenticationMethod": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Authentication method used to establish the session."
+        },
+        "ipAddress": {
+          "type": "string",
+          "minLength": 1,
+          "description": "IP address associated with the security session."
+        },
+        "deviceFingerprint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Device fingerprint associated with the security session."
+        },
+        "authorizationTokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Authorization token values associated with the security session."
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session was established."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp indicating when the security session expires, when an expiration time applies."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Indicates whether the security session is currently active."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "authenticationMethod",
+        "startedAt"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

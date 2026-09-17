@@ -1,0 +1,93 @@
+[project]
+name = "meta-compiler"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "balajit", email = "thummala.balaji@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "datamodel-code-generator>=0.76.2",
+    "jsonschema>=4.26.0",
+    "meta-config>=0.1.0",
+    "meta-telemetry>=0.1.0",
+    "networkx>=3.6.1",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
+    "opentelemetry-instrumentation-openai>=0.62.3",
+    "opentelemetry-sdk>=1.44.0",
+    "pyarrow>=25.0.1",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "sf-hamilton>=1.90.0",
+    "sqlalchemy>=2.0.52",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "deptry>=0.25.1",
+    "mypy>=2.3.1",
+    "pydeps>=3.0.7",
+    "pylint>=4.0.8",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=0.23.8",
+    "rope>=1.14.0",
+    "ruff>=0.16.5",
+]
+
+
+[project.entry-points."meta_builder.config_schemas"]
+compiler_settings = "meta_compiler.config:CompilerSettings"
+
+
+[tool.mypy]
+python_executable = ".venv/bin/python"
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+ignore_missing_imports = true
+
+# Ignore missing type stubs for third-party libraries without built-in types
+[[tool.mypy.overrides]]
+module = [
+    "structlog.*",
+    "opentelemetry.*",
+    "httpx.*",
+]
+ignore_missing_imports = true
+
+[tool.deptry.package_module_name_map]
+sf-hamilton = "hamilton"
+
+[tool.deptry.per_rule_ignores]
+DEP002 = ["asyncpg", "pyarrow"]
+
+[tool.pylint.main]
+ignored-modules = ["hamilton"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q --strict-markers"
+markers = [
+    "asyncio: mark test as an asynchronous test handler",
+]
+
+[tool.uv.sources]
+meta-config = { path = "../meta-config" , editable = true}
+meta-telemetry = { path = "../meta-telemetry", editable = true }
